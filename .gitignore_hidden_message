@@ -1,0 +1,16 @@
+# Concord library (cloned/built separately, not part of this repo)
+concord/
+
+# Local scratch / non-essential files
+ignore/
+
+# Build artifacts
+asms/
+bins/
+
+# Common junk
+*.o
+*.d
+*.log
+.env
+core.*
