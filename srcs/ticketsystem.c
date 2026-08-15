@@ -8,8 +8,33 @@
 #include <stdio.h>
 #include <string.h>
 #include "channelutils.h"
+#include "utils.h"
 #define VCHANNEL 1155156372338524351
 #define ICON_URL "https://github.com/MurasakinoNll/c-bot-concord/blob/main/Cf.png?raw=true"
+
+int load_ticketcounter(void){
+  int tc=0;
+  FILE *fp = fopen("tickcount.dat", "r+");
+  if (fp == NULL){
+    fp = fopen("tickcount.dat", "w");
+    if (fp==NULL) return 1;
+
+    tc=1;
+    fprintf(fp, "%d", tc);
+    fclose(fp);
+    return tc;
+  }
+
+  if (fscanf(fp, "%d", &tc) != 1){
+   tc = 0;
+  }
+  tc++;
+  rewind(fp);
+  fprintf(fp, "%d", tc);
+  fflush(fp);
+  fclose(fp);
+  return tc;
+}
 
 char JSONT[] =
     "[\n"
@@ -28,13 +53,6 @@ char JSONT[] =
     "        ]\n"
     "    }\n"
     "]\n";
-
-char JSON[] = "{\n"
-              "  \"title\": \"garak title\",\n"
-              "  \"description\": \"testing desc\", \n"
-              "  \"url\": \"http://127.0.0.1:8080/\", \n"
-              "  \"color\" 3446043, \n"
-              "}";
 
 
 #define VICON_URL "https://media.discordapp.net/attachments/1171017496220938352/1263918534426365952/Confluence_-_Final_outlined.png?ex=6a7f57dd&is=6a7e065d&hm=215bd1246fdf4cdd468408402e41602589034bcc9ed0b8a1befbf836d8ff23e5&format=webp&quality=lossless&width=960&height=960&"
@@ -63,6 +81,15 @@ char JSONV[] = "{\n"
 void ticketinit(struct discord *client, const struct discord_message *event) {
   if (event->author->bot)
     return;
+
+  UserCtx ctx = get_ctx_from_message(event);
+  u64snowflake allowlist[] = {
+  1155152569526669391ULL
+  };
+  if (!check_perm_byrole(&ctx, allowlist, 1)){
+    fprintf(stderr, "ticketinit rejected, invalid permissions\n");
+    return;
+  }
 
   struct discord_embed embed = {0};
   discord_embed_from_json(JSONV, sizeof(JSONV), &embed);
@@ -131,6 +158,15 @@ void welcome_message(struct discord *client, u64snowflake targetchannel){
   discord_create_message(client, targetchannel, &params, NULL);
 }
 void json_builder(struct discord *client, const struct discord_message *event){
+  UserCtx ctx = get_ctx_from_message(event);
+  u64snowflake allowlist[] = {
+  1155152569526669391ULL
+  };
+  if (!check_perm_byrole(&ctx, allowlist, 1)){
+    fprintf(stderr, "json_builder rejected, invalid permissions\n");
+    return;
+  }
+
   if (event->author->bot) return;
 
   struct discord_embed embed = {

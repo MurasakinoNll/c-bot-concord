@@ -9,9 +9,9 @@ void channel_create(struct discord *client, const struct discord_interaction *ev
         log_error("Interaction event user profile is missing data structure profiles.");
         return;
     }
-    printf("we are here");
+  int tc = load_ticketcounter();
     char name_buffer[256] = {0};
-    snprintf(name_buffer, sizeof(name_buffer), "ticket-%s", event->member->user->username);
+    snprintf(name_buffer, sizeof(name_buffer), "Ticket-%s-%i", event->member->user->username, tc);
 
     struct discord_interaction_callback_data response_data = {
         .content = "Your ticket has been created :white_check_mark:",

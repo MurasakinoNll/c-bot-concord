@@ -13,3 +13,4 @@ bins/
 *.d
 *.log
 .env
+core.*
