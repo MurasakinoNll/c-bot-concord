@@ -1,0 +1,62 @@
+[
+  {
+    "file": "srcs/main.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=c11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/main.c",
+      "-o",
+      "asms/main.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/main.o"
+  },
+  {
+    "file": "srcs/roleutils.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=c11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/roleutils.c",
+      "-o",
+      "asms/roleutils.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/roleutils.o"
+  },
+  {
+    "file": "srcs/ticketsystem.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=c11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/ticketsystem.c",
+      "-o",
+      "asms/ticketsystem.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/ticketsystem.o"
+  }
+]

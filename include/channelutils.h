@@ -1,0 +1,7 @@
+#ifndef CHANNELUTILS_H
+#define CHANNELUTILS_H
+
+#include <concord/discord.h>
+#include <concord/discord_codecs.h>
+void channel_create(struct discord *client, const struct discord_interaction *event);
+#endif
