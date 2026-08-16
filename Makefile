@@ -21,7 +21,7 @@ CPPFLAGS:= -MMD -MP
 
 # Concord itself needs pthread + curl to link.
 LDFLAGS := -L$(CONCORD_DIR)/lib
-LDLIBS  := -ldiscord -lpthread -lcurl -lm
+LDLIBS  := -ldiscord -lsqlite3 -lpthread -lcurl -lm
 
 # === Rules ====================================================================
 .PHONY: all clean fclean re
