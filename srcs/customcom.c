@@ -25,7 +25,7 @@ typedef struct cc_node {
 static void cc_cache_insert(const char *name, const char *response, int cooldown);
 static void cc_cache_remove(const char *name);
 static cc_node *cc_lookup(const char *name);
-
+sqlite3 *customcom_get_db(void) { return db; }
 void cc_dispatch(struct discord *client, const struct discord_message *event) {
   char sub[32] = "";
   int n = 0;
@@ -134,31 +134,14 @@ void cc_delete(struct discord *client, const struct discord_message *event, cons
   discord_create_message(client, event->channel_id, &reply, NULL);
 }
 
+#include "ccembed.h"  // likely temporary
+
 void cc_search(struct discord *client, const struct discord_message *event, const char *args) {
   char query[64] = "";
-  sscanf(args, " %63s", query);   /* empty if no args — list-all case */
-
-  char pattern[68];
-  snprintf(pattern, sizeof pattern, "%%%s%%", query);   /* SQL LIKE wildcard wrap */
-
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(db, "SELECT name FROM customcoms WHERE name LIKE ? ORDER BY name", -1, &stmt, NULL);
-  sqlite3_bind_text(stmt, 1, pattern, -1, SQLITE_STATIC);
-
-  char out[1900] = "";   /* stay under Discord's 2000-char message limit */
-  strcat(out, "Custom commands:\n");
-  int found = 0;
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    const char *name = (const char*)sqlite3_column_text(stmt, 0);
-    strncat(out, name, sizeof(out) - strlen(out) - 2);
-    strcat(out, "\n");
-    found = 1;
-  }
-  sqlite3_finalize(stmt);
-
-  struct discord_create_message reply = { .content = found ? out : "cc not found" };
-  discord_create_message(client, event->channel_id, &reply, NULL);
+  sscanf(args, " %63s", query);
+  ccembed_send_page(client, event->channel_id, event->author->id, query, 0);
 }
+
 void cc_cooldown(struct discord *client, const struct discord_message *event, const char *args) {
   if (event->author->bot) return;
 

@@ -7,10 +7,14 @@ ignore/
 # Build artifacts
 asms/
 bins/
-
+__pycache__/
 # Common junk
 *.o
 *.d
 *.log
+*.db
+*.dat
+*.txt
+check.py
 .env
 core.*

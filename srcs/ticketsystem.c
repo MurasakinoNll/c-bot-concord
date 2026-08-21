@@ -7,7 +7,9 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include "ccembed.h"
 #include "channelutils.h"
+#include "help.h"
 #include "utils.h"
 #define VCHANNEL 1155156372338524351
 #define ICON_URL "https://github.com/MurasakinoNll/c-bot-concord/blob/main/Cf.png?raw=true"
@@ -120,7 +122,15 @@ void on_interaction_create(struct discord *client, const struct discord_interact
   log_info("Interaction %" PRIu64 " received\n", event->id);
   if (!event->data || !event->data->custom_id){ printf("event rejected]n");return;}
   if (event->type != DISCORD_INTERACTION_MESSAGE_COMPONENT){ printf("interaction component failed]n");return;}
-
+  
+  if (strncmp(event->data->custom_id, "helppg:", 7) == 0) {
+    help_handle_interaction(client, event);
+    return;
+  }
+  if (strncmp(event->data->custom_id, "ccpg:", 5) == 0) {
+    ccembed_handle_interaction(client, event);
+    return;
+  }
   if (0 == strncmp(event->data->custom_id, "create_ticket", 13)) {
     channel_create(client, event);
   }

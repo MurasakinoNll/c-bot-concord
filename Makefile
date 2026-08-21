@@ -43,6 +43,12 @@ clean:
 fclean: clean
 	rm -rf $(BIN_DIR)
 
+release-static: CFLAGS := -O2 -DNDEBUG -static -I$(INC_DIR) -I$(CONCORD_DIR)/include
+release-static: LDFLAGS := -L$(CONCORD_DIR)/lib -static
+release-static: LDLIBS := -ldiscord -lcurl -lsqlite3 -lssl -lcrypto -lpthread -lz -lm
+release-static: $(TARGET)
+	strip $(TARGET)
+
 re: fclean all
 
 -include $(DEPS)

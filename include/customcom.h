@@ -3,7 +3,9 @@
 
 #include <concord/discord.h>
 #include <concord/discord_codecs.h>
+#include <sqlite3.h>
 
+sqlite3 *customcom_get_db(void);
 void customcom_init(void);
 
 void cc_dispatch(struct discord *client, const struct discord_message *event);
