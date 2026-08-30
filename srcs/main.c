@@ -45,11 +45,13 @@ int main(void) {
   discord_set_on_command(client, "roleremove", &role_member_remove);
   discord_set_on_command(client, "v", &verify);
   discord_set_on_command(client, "verify", &verify);
+  discord_set_on_command(client, "close", &close_ticket);
   discord_set_on_command(client, "cc", &cc_dispatch);
   discord_set_on_command(client, "ban", &ban);
   discord_set_on_command(client, "mute", &mute);
   discord_set_on_command(client, "unban", &unban);
   discord_set_on_command(client, "unmute", &unmute);
+  
   discord_set_on_message_create(client, &cc_trigger_check);
   
   discord_set_on_interaction_create(client, &on_interaction_create);

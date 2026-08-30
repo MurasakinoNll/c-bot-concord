@@ -29,6 +29,7 @@ static const help_page pages[] = {
   {
     "__alias/shortcut__:",
     "**v|verify** <uid>\n"
+    "**close** (closes ticket it is used in)\n"
   },
   {
     "__Custom Commands__:",
