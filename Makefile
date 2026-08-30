@@ -15,7 +15,7 @@ DEPS := $(OBJS:.o=.d)
 
 # === Toolchain ================================================================
 CC      := cc
-CFLAGS  := -g -Wall -Wextra -std=c11 \
+CFLAGS  := -g -Wall -Wextra -std=gnu11 \
            -I$(INC_DIR) -I$(CONCORD_DIR)/include
 CPPFLAGS:= -MMD -MP
 

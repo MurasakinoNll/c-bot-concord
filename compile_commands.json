@@ -1,12 +1,112 @@
 [
   {
+    "file": "srcs/ccembed.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/ccembed.c",
+      "-o",
+      "asms/ccembed.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/ccembed.o"
+  },
+  {
+    "file": "srcs/channelutils.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/channelutils.c",
+      "-o",
+      "asms/channelutils.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/channelutils.o"
+  },
+  {
+    "file": "srcs/cJSON.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/cJSON.c",
+      "-o",
+      "asms/cJSON.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/cJSON.o"
+  },
+  {
+    "file": "srcs/customcom.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/customcom.c",
+      "-o",
+      "asms/customcom.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/customcom.o"
+  },
+  {
+    "file": "srcs/help.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/help.c",
+      "-o",
+      "asms/help.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/help.o"
+  },
+  {
     "file": "srcs/main.c",
     "arguments": [
       "/usr/bin/cc",
       "-g",
       "-Wall",
       "-Wextra",
-      "-std=c11",
+      "-std=gnu11",
       "-Iinclude",
       "-Iconcord/include",
       "-MMD",
@@ -20,13 +120,33 @@
     "output": "asms/main.o"
   },
   {
+    "file": "srcs/mod.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/mod.c",
+      "-o",
+      "asms/mod.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/mod.o"
+  },
+  {
     "file": "srcs/roleutils.c",
     "arguments": [
       "/usr/bin/cc",
       "-g",
       "-Wall",
       "-Wextra",
-      "-std=c11",
+      "-std=gnu11",
       "-Iinclude",
       "-Iconcord/include",
       "-MMD",
@@ -40,13 +160,33 @@
     "output": "asms/roleutils.o"
   },
   {
+    "file": "srcs/temp.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/temp.c",
+      "-o",
+      "asms/temp.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/temp.o"
+  },
+  {
     "file": "srcs/ticketsystem.c",
     "arguments": [
       "/usr/bin/cc",
       "-g",
       "-Wall",
       "-Wextra",
-      "-std=c11",
+      "-std=gnu11",
       "-Iinclude",
       "-Iconcord/include",
       "-MMD",
@@ -58,5 +198,45 @@
     ],
     "directory": "/home/haraku/harakdev/cbot",
     "output": "asms/ticketsystem.o"
+  },
+  {
+    "file": "srcs/urban.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/urban.c",
+      "-o",
+      "asms/urban.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/urban.o"
+  },
+  {
+    "file": "srcs/utils.c",
+    "arguments": [
+      "/usr/bin/cc",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-std=gnu11",
+      "-Iinclude",
+      "-Iconcord/include",
+      "-MMD",
+      "-MP",
+      "-c",
+      "srcs/utils.c",
+      "-o",
+      "asms/utils.o"
+    ],
+    "directory": "/home/haraku/harakdev/cbot",
+    "output": "asms/utils.o"
   }
 ]

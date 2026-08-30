@@ -15,6 +15,7 @@ static const help_page pages[] = {
   {
   "__useful shit__:",
     "**urban** <query>\n"
+    "**temp**\n"
   },
   {
     "__mod__:",
