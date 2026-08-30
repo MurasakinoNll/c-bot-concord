@@ -4,9 +4,9 @@
 #include <concord/types.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <string.h>
 #include "roleutils.h"
 #include "ticketsystem.h"
+#include "channelutils.h"
 #include "mod.h"
 #include "customcom.h"
 #include <signal.h>
@@ -32,6 +32,7 @@ int main(void) {
   g_client = client;
   signal(SIGINT, handle_sigint);
   customcom_init();
+  ticket_db_init();
 
   discord_set_on_ready(client, &on_ready);
   discord_set_prefix(client, "+");

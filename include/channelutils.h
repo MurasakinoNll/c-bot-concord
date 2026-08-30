@@ -3,5 +3,6 @@
 
 #include <concord/discord.h>
 #include <concord/discord_codecs.h>
+void ticket_db_init(void);
 void channel_create(struct discord *client, const struct discord_interaction *event);
 #endif
