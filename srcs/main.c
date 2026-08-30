@@ -1,17 +1,19 @@
+#include "channelutils.h"
+#include "customcom.h"
+#include "help.h"
+#include "mod.h"
+#include "roleutils.h"
+#include "temp.h"
+#include "ticketsystem.h"
+#include "urban.h"
 #include <concord/discord.h>
 #include <concord/discord_codecs.h>
 #include <concord/log.h>
 #include <concord/types.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "roleutils.h"
-#include "ticketsystem.h"
-#include "channelutils.h"
-#include "mod.h"
-#include "customcom.h"
-#include <signal.h>
-#include "help.h"
-#include "urban.h"
+
 static struct discord *g_client;
 
 static void handle_sigint(int sig) {
@@ -20,7 +22,8 @@ static void handle_sigint(int sig) {
 }
 
 u64snowflake g_app_id;
-#define ICON_URL "https://github.com/MurasakinoNll/c-bot-concord/blob/main/Cf.png?raw=true"
+#define ICON_URL                                                               \
+  "https://github.com/MurasakinoNll/c-bot-concord/blob/main/Cf.png?raw=true"
 void on_ready(struct discord *client, const struct discord_ready *event) {
   log_info("main bot connected to discord as %s#%s", event->user->username,
            event->user->discriminator);
@@ -51,13 +54,12 @@ int main(void) {
   discord_set_on_command(client, "mute", &mute);
   discord_set_on_command(client, "unban", &unban);
   discord_set_on_command(client, "unmute", &unmute);
-  
+
   discord_set_on_command(client, "urban", &urban_command);
-
+  discord_set_on_command(client, "temp", &temp_command);
   discord_set_on_message_create(client, &cc_trigger_check);
-  
-  discord_set_on_interaction_create(client, &on_interaction_create);
 
+  discord_set_on_interaction_create(client, &on_interaction_create);
 
   discord_run(client);
 
