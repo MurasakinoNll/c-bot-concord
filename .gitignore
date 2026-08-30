@@ -15,6 +15,6 @@ __pycache__/
 *.db
 *.dat
 *.txt
-check.py
+*.py
 .env
 core.*
