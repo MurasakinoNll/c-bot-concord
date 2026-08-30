@@ -10,6 +10,7 @@
 #include "ccembed.h"
 #include "channelutils.h"
 #include "help.h"
+#include "urban.h"
 #include "utils.h"
 #define VCHANNEL 1155156372338524351
 #define ICON_URL "https://github.com/MurasakinoNll/c-bot-concord/blob/main/Cf.png?raw=true"
@@ -130,6 +131,10 @@ void on_interaction_create(struct discord *client, const struct discord_interact
   if (strncmp(event->data->custom_id, "ccpg:", 5) == 0) {
     ccembed_handle_interaction(client, event);
     return;
+  }
+  if (strncmp(event->data->custom_id, "urbanpg:", 8) == 0) {
+  urban_handle_interaction(client, event);
+  return;
   }
   if (0 == strncmp(event->data->custom_id, "create_ticket", 13)) {
     channel_create(client, event);

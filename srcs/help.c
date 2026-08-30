@@ -13,6 +13,10 @@ static const help_page pages[] = {
     "**builder** json_builder callback\n"
   },
   {
+  "__useful shit__:",
+    "**urban** <query>\n"
+  },
+  {
     "__mod__:",
     "**ban** <uid|mention>\n"
     "**mute** <uid|mention> <duration[minutes]>\n"

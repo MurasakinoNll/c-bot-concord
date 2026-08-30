@@ -11,7 +11,7 @@
 #include "customcom.h"
 #include <signal.h>
 #include "help.h"
-
+#include "urban.h"
 static struct discord *g_client;
 
 static void handle_sigint(int sig) {
@@ -52,6 +52,8 @@ int main(void) {
   discord_set_on_command(client, "unban", &unban);
   discord_set_on_command(client, "unmute", &unmute);
   
+  discord_set_on_command(client, "urban", &urban_command);
+
   discord_set_on_message_create(client, &cc_trigger_check);
   
   discord_set_on_interaction_create(client, &on_interaction_create);
