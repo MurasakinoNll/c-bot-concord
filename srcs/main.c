@@ -13,7 +13,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
-
+#include "ping.h"
 static struct discord *g_client;
 
 static void handle_sigint(int sig) {
@@ -57,6 +57,8 @@ int main(void) {
 
   discord_set_on_command(client, "urban", &urban_command);
   discord_set_on_command(client, "temp", &temp_command);
+  discord_set_on_command(client, "ping", &ping_command);
+
   discord_set_on_message_create(client, &cc_trigger_check);
 
   discord_set_on_interaction_create(client, &on_interaction_create);
