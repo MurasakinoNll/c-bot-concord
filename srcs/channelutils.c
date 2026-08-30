@@ -18,7 +18,7 @@ typedef struct {
 void ticket_db_init(void){
   sqlite3 *db = customcom_get_db();
   sqlite3_exec(db,
-               "CREATE TABLE IF NOT EXSITS tickets ("
+               "CREATE TABLE IF NOT EXISTS tickets ("
                "channel_id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, "
                "ticket_num INTEGER, status TEXT DEFAULT 'open');",
                NULL, NULL, NULL);
