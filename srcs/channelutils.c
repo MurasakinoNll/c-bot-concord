@@ -39,7 +39,8 @@ static u64snowflake ticket_find_open(u64snowflake owner_id) {
   sqlite3_finalize(stmt);
   return found;
 }
-static void ticket_insert(u64snowflake channel_id, u64snowflake owner_id, int ticket_num, const char* username) {
+
+static void ticket_insert(u64snowflake channel_id, u64snowflake owner_id, int ticket_num, const char *username) {
   sqlite3 *db = customcom_get_db();
   sqlite3_stmt *stmt;
   sqlite3_prepare_v2(db,
@@ -49,7 +50,12 @@ static void ticket_insert(u64snowflake channel_id, u64snowflake owner_id, int ti
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)owner_id);
   sqlite3_bind_int(stmt, 3, ticket_num);
   sqlite3_bind_text(stmt, 4, username, -1, SQLITE_STATIC);
-  sqlite3_step(stmt);
+  int rc = sqlite3_step(stmt);
+  if (rc != SQLITE_DONE) {
+    fprintf(stderr, "ticket_insert FAILED: %s (rc=%d)\n", sqlite3_errmsg(db), rc);
+  } else {
+    fprintf(stderr, "ticket_insert OK: channel_id=%" PRIu64 "\n", channel_id);
+  }
   sqlite3_finalize(stmt);
 }
 
@@ -130,17 +136,20 @@ static bool ticket_find_by_channel(u64snowflake channel_id, ticket_row *out) {
   sqlite3_stmt *stmt;
   bool found = false;
 
+  fprintf(stderr, "ticket_find_by_channel looking for channel_id=%" PRIu64 "\n", channel_id);
+
   sqlite3_prepare_v2(db,
-                     "SELECT owner_id, ticket_num, owner_username FROM tickets WHERE channel_id = ? AND status = 'open'",
-                     -1, &stmt, NULL);
+    "SELECT owner_id, ticket_num, owner_username FROM tickets WHERE channel_id = ? AND status = 'open'",
+    -1, &stmt, NULL);
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
   if (sqlite3_step(stmt) == SQLITE_ROW) {
     out->owner_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
-    out->ticket_num = sqlite3_column_int64(stmt, 1);
-    strncpy(out->owner_username, (const char*)sqlite3_column_text(stmt, 2), sizeof(out->owner_username) -1);
+    out->ticket_num = sqlite3_column_int(stmt, 1);
+    strncpy(out->owner_username, (const char*)sqlite3_column_text(stmt, 2), sizeof(out->owner_username) - 1);
     found = true;
   }
   sqlite3_finalize(stmt);
+  fprintf(stderr, "ticket_find_by_channel found=%d\n", found);
   return found;
 }
 
