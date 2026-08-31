@@ -6,7 +6,7 @@ built by default against x86_64 gnu11 but is extensible to ARMv7
 ---
 
 ## dependencies:
-`libcurl` `concord` `[cJSON](https://github.com/DaveGamble/cJSON)` `sqlite3` `sys/wait`
+`libcurl` `concord` [cJSON](https://github.com/DaveGamble/cJSON) `sqlite3` `sys/wait`
 
 ---
 
