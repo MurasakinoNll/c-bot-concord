@@ -14,6 +14,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "ping.h"
+#include "msglimit.h"
+
+
 static struct discord *g_client;
 
 static void handle_sigint(int sig) {
@@ -31,12 +34,18 @@ void on_ready(struct discord *client, const struct discord_ready *event) {
   g_app_id = event->application->id;
 }
 
+void on_message_fallback(struct discord *client, const struct discord_message *event){
+  if(msglimit_enforce(client, event)) return;
+  cc_trigger_check(client, event);
+}
+
 int main(void) {
   struct discord *client = discord_config_init("concord/config.json");
   g_client = client;
   signal(SIGINT, handle_sigint);
   customcom_init();
   ticket_db_init();
+  msglimit_db_init();
 
   discord_set_on_ready(client, &on_ready);
   discord_set_prefix(client, "+");
@@ -51,16 +60,18 @@ int main(void) {
   discord_set_on_command(client, "verify", &verify);
   discord_set_on_command(client, "close", &close_ticket);
   discord_set_on_command(client, "cc", &cc_dispatch);
+
   discord_set_on_command(client, "ban", &ban);
   discord_set_on_command(client, "mute", &mute);
   discord_set_on_command(client, "unban", &unban);
   discord_set_on_command(client, "unmute", &unmute);
+  discord_set_on_command(client, "msglimit", &msglimit_command);
 
   discord_set_on_command(client, "urban", &urban_command);
   discord_set_on_command(client, "temp", &temp_command);
   discord_set_on_command(client, "ping", &ping_command);
 
-  discord_set_on_message_create(client, &cc_trigger_check);
+  discord_set_on_message_create(client, &on_message_fallback);
 
   discord_set_on_interaction_create(client, &on_interaction_create);
 

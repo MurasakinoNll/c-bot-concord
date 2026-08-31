@@ -24,6 +24,7 @@ static const help_page pages[] = {
     "**mute** <uid|mention> <duration[minutes]>\n"
     "**unban** <uid>\n"
     "**unmute** <uid|mention>\n"
+    "**msglimit** <text|media> <uid|mention> <uint64 limit>  when limit = 0 the limit is removed>\n"
   },
   {
     "__roleutil__:",
