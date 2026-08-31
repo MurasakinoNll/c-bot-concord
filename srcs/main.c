@@ -24,6 +24,7 @@ static void handle_sigint(int sig) {
 u64snowflake g_app_id;
 #define ICON_URL                                                               \
   "https://github.com/MurasakinoNll/c-bot-concord/blob/main/Cf.png?raw=true"
+
 void on_ready(struct discord *client, const struct discord_ready *event) {
   log_info("main bot connected to discord as %s#%s", event->user->username,
            event->user->discriminator);
