@@ -15,6 +15,7 @@
 #include <stddef.h>
 #include "ping.h"
 #include "msglimit.h"
+#include "ptyshell.h"
 
 
 static struct discord *g_client;
@@ -23,6 +24,8 @@ static void handle_sigint(int sig) {
   (void)sig;
   discord_shutdown(g_client);
 }
+
+#define PTY_CHANNEL_ID 1486807756290785400ULL
 
 u64snowflake g_app_id;
 #define ICON_URL                                                               \
@@ -36,6 +39,10 @@ void on_ready(struct discord *client, const struct discord_ready *event) {
 
 void on_message_fallback(struct discord *client, const struct discord_message *event){
   if(msglimit_enforce(client, event)) return;
+  if(event->channel_id ==  PTY_CHANNEL_ID) {
+    ptyinput_fallback(client, event);
+    return;
+  }
   cc_trigger_check(client, event);
 }
 
@@ -70,6 +77,9 @@ int main(void) {
   discord_set_on_command(client, "urban", &urban_command);
   discord_set_on_command(client, "temp", &temp_command);
   discord_set_on_command(client, "ping", &ping_command);
+
+  discord_set_on_command(client, "ptystart", &ptystart_command);
+  discord_set_on_command(client, "ptystop", &ptystop_command);
 
   discord_set_on_message_create(client, &on_message_fallback);
 
