@@ -15,6 +15,8 @@ static const help_page pages[] = {
   {
   "__useful shit__:",
     "**urban** <query>\n"
+    "**dungeon** (dungeons hamudi)\n"
+    "**undungeon** (undungeons hamudi)\n"
     "**temp**\n"
     "**ping**\n"
   },
@@ -36,6 +38,7 @@ static const help_page pages[] = {
   {
     "__alias/shortcut__:",
     "**v|verify** <uid>\n"
+    "**cocverify** <uid>\n"
     "**close** (closes ticket it is used in)\n"
   },
   {

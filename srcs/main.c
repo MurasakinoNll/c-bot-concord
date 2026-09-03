@@ -13,6 +13,8 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <time.h>
 #include "ping.h"
 #include "msglimit.h"
 #include "ptyshell.h"
@@ -47,6 +49,10 @@ void on_message_fallback(struct discord *client, const struct discord_message *e
 }
 
 int main(void) {
+  
+  setenv("TZ", "UTC", 1);
+  tzset();
+
   struct discord *client = discord_config_init("concord/config.json");
   g_client = client;
   signal(SIGINT, handle_sigint);
@@ -65,6 +71,7 @@ int main(void) {
   discord_set_on_command(client, "roleremove", &role_member_remove);
   discord_set_on_command(client, "v", &verify);
   discord_set_on_command(client, "verify", &verify);
+  discord_set_on_command(client, "cocverify", &cocverify);
   discord_set_on_command(client, "close", &close_ticket);
   discord_set_on_command(client, "cc", &cc_dispatch);
 
@@ -74,6 +81,8 @@ int main(void) {
   discord_set_on_command(client, "unmute", &unmute);
   discord_set_on_command(client, "msglimit", &msglimit_command);
 
+  discord_set_on_command(client, "dungeon", &dungeon);
+  discord_set_on_command(client, "undungeon", &undungeon);
   discord_set_on_command(client, "urban", &urban_command);
   discord_set_on_command(client, "temp", &temp_command);
   discord_set_on_command(client, "ping", &ping_command);

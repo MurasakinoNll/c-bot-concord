@@ -2,6 +2,7 @@
 #include <concord/discord_codecs.h>
 #include <concord/types.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -10,7 +11,7 @@ static void on_modaction_success(struct discord *client, struct discord_response
   u64snowflake channel_id = (u64snowflake)(intptr_t)resp->data;
   char buf[256];
 snprintf(buf, sizeof buf, "err: %s", discord_strerror(resp->code, client));
-  struct discord_create_message params = { .content = "modaction success" };
+  struct discord_create_message params = { .content = "done" };
   discord_create_message(client, channel_id, &params, NULL);
 }
 static void on_modaction_member_success(struct discord *client, struct discord_response *resp, const struct discord_guild_member *mem){
@@ -71,7 +72,7 @@ void mute(struct discord *client, const struct discord_message *event){
 
   if (event->mentions && event->mentions->size > 0) {
     uid = event->mentions->array[0].id;
-    sscanf(event->content, "%*s %d", &minutes);
+    sscanf(event->content, "%*s %*s %d", &minutes);
   } else {
     sscanf(event->content, " %" SCNu64 " %d", &uid, &minutes);
   }
@@ -80,9 +81,11 @@ void mute(struct discord *client, const struct discord_message *event){
     fprintf(stderr, "mute: <uid|mention> <minutes>\n");
     return;
   }
-
-  u64unix_ms until_ms = ((u64unix_ms)time(NULL) + (u64unix_ms)(minutes * 60)) * 1000;
-
+  
+  u64unix_ms curr = (u64unix_ms)time(NULL) * 1000;
+  u64unix_ms durr = (u64unix_ms)minutes *60 *1000;
+  u64unix_ms until_ms = curr + durr;
+  
   struct discord_modify_guild_member params = {
     .communication_disabled_until = until_ms,
   };
@@ -91,12 +94,12 @@ void mute(struct discord *client, const struct discord_message *event){
     .fail = &on_modaction_fail,
     .data = (void*)(intptr_t)event->channel_id,
   };
+  fprintf(stderr, "\nuntil: %lu\n", until_ms);
   discord_modify_guild_member(client, event->guild_id, uid, &params, &ret);
 }
 
 void unmute(struct discord *client, const struct discord_message *event){
   if (event->author->bot) return;
-
   UserCtx ctx = get_ctx_from_message(event);
   u64snowflake allowlist[] = { 1155152569526669391ULL };
   if (!check_perm_byrole(&ctx, allowlist, 1)){
@@ -114,10 +117,12 @@ void unmute(struct discord *client, const struct discord_message *event){
     fprintf(stderr, "unmute <uid|mention>\n");
     return;
   }
-
+  int unix_s = 1718000000; //ugly magic for u64unix_ms epoch prestamped
+  u64unix_ms epoch = (u64unix_ms)unix_s * 1000;
   struct discord_modify_guild_member params = {
-    .communication_disabled_until = 0,
+    .communication_disabled_until = epoch,
   };
+  
   struct discord_ret_guild_member ret = {
   .done = &on_modaction_member_success,
   .fail = &on_modaction_fail,
@@ -132,7 +137,7 @@ void unban(struct discord *client, const struct discord_message *event){
   UserCtx ctx = get_ctx_from_message(event);
   u64snowflake allowlist[] = { 1155152569526669391ULL };
   if (!check_perm_byrole(&ctx, allowlist, 1)){
-    fprintf(stderr, "unmute_command rejected, invalid permissions\n");
+    fprintf(stderr, "unban_command rejected, invalid permissions\n");
     return;
   }
 
