@@ -154,6 +154,7 @@ static void send_urban_page(struct discord *client, u64snowflake channel_id, u64
 
 void urban_command(struct discord *client, const struct discord_message *event) {
   if (event->author->bot) return;
+  if (event->author->id == 1255503080842330264) return;
 
   char term[128] = "";
   sscanf(event->content, " %127[^\n]", term);
