@@ -80,6 +80,7 @@ int main(void) {
   discord_set_on_command(client, "unban", &unban);
   discord_set_on_command(client, "unmute", &unmute);
   discord_set_on_command(client, "msglimit", &msglimit_command);
+  discord_set_on_message_update(client, &msglimit_enforce_edit);
 
   discord_set_on_command(client, "dungeon", &dungeon);
   discord_set_on_command(client, "undungeon", &undungeon);
@@ -89,7 +90,7 @@ int main(void) {
 
   discord_set_on_command(client, "ptystart", &ptystart_command);
   discord_set_on_command(client, "ptystop", &ptystop_command);
-
+  
   discord_set_on_message_create(client, &on_message_fallback);
 
   discord_set_on_interaction_create(client, &on_interaction_create);

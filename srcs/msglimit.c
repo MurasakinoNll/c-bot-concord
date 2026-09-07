@@ -150,3 +150,52 @@ bool msglimit_enforce(struct discord *client, const struct discord_message *even
   }
   return false;
 }
+
+static bool apply_media_check(struct discord *client, const struct discord_message *event) {
+  if (!event->guild_id) return false;
+  if (!event->author || event->author->bot) return false;
+  if (!message_is_media(event)) return false;
+
+  sqlite3 *db = customcom_get_db();
+  sqlite3_stmt *stmt;
+  int media_limit = 0;
+
+  sqlite3_prepare_v2(db, "SELECT media_limit FROM msglimit_settings WHERE guild_id = ? AND user_id = ?", -1, &stmt, NULL);
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
+  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
+  if (sqlite3_step(stmt) == SQLITE_ROW) media_limit = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+
+  if (media_limit <= 0) return false;
+
+  char day[16];
+  get_today_utc(day, sizeof day);
+
+  sqlite3_prepare_v2(db,
+    "INSERT INTO msglimit_counts (guild_id, user_id, day, media_count) VALUES (?, ?, ?, 1) "
+    "ON CONFLICT(guild_id, user_id, day) DO UPDATE SET media_count = media_count + 1",
+    -1, &stmt, NULL);
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
+  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
+  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+
+  sqlite3_prepare_v2(db, "SELECT media_count FROM msglimit_counts WHERE guild_id=? AND user_id=? AND day=?", -1, &stmt, NULL);
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
+  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
+  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+  int count = 0;
+  if (sqlite3_step(stmt) == SQLITE_ROW) count = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+
+  if (count > media_limit) {
+    discord_delete_message(client, event->channel_id, event->id, NULL, NULL);
+    return true;
+  }
+  return false;
+}
+
+void msglimit_enforce_edit(struct discord *client, const struct discord_message *event) {
+  apply_media_check(client, event);
+}

@@ -150,7 +150,7 @@ void dungeon(struct discord *client, const struct discord_message *event){
     .fail = &on_role_add_fail,
     .data = (void*)(intptr_t)event->channel_id,
   };
-  discord_add_guild_member_role(client, event->guild_id, 1255503080842330264, DUNGEONR,&(struct discord_add_guild_member_role){0}, &ret);
+  discord_add_guild_member_role(client, event->guild_id, 1255503080842330264, DUNGEONR,&(struct discord_add_guild_member_role){0}, NULL);
   discord_remove_guild_member_role(client, event->guild_id, 1255503080842330264, VERIFIED, &(struct discord_remove_guild_member_role){0}, &ret);
 }
 void undungeon(struct discord*client, const struct discord_message *event){
@@ -163,7 +163,7 @@ void undungeon(struct discord*client, const struct discord_message *event){
     .fail = &on_role_add_fail,
     .data = (void*)(intptr_t)event->channel_id,
   };
-  discord_add_guild_member_role(client, event->guild_id, 1255503080842330264, VERIFIED,&(struct discord_add_guild_member_role){0}, &ret);
+  discord_add_guild_member_role(client, event->guild_id, 1255503080842330264, VERIFIED,&(struct discord_add_guild_member_role){0}, NULL);
   discord_remove_guild_member_role(client, event->guild_id, 1255503080842330264, DUNGEONR, &(struct discord_remove_guild_member_role){0}, &ret);
 }
 
