@@ -1,6 +1,6 @@
-#include "msglimit.h"
-#include "customcom.h"
-#include "utils.h"
+#include "mod/msglimit.h"
+#include "customcom/customcom.h"
+#include "utils/utils.h"
 #include <concord/discord_codecs.h>
 #include <sqlite3.h>
 #include <stdbool.h>

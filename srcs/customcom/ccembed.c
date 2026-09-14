@@ -2,8 +2,8 @@
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
-#include "customcom.h"
-#include "ccembed.h"
+#include "customcom/customcom.h"
+#include "customcom/ccembed.h"
 
 #define CC_PAGE_SIZE 13
 

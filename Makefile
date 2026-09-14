@@ -9,14 +9,20 @@ CONCORD_DIR := concord
 TARGET := $(BIN_DIR)/cfbot
 
 # === Sources / objects =======================================================
-SRCS := $(wildcard $(SRC_DIR)/*.c)
+# Recursive: picks up main.c at the top level and every *.c under srcs/<category>/
+SRCS := $(shell find $(SRC_DIR) -name '*.c')
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
+
+# Every immediate subfolder of include/ (core, useful, mod, roleutil, customcom,
+# misc, utils, ...) gets its own -I so quoted #includes resolve regardless of
+# which category a header lives under.
+INC_SUBDIRS := $(wildcard $(INC_DIR)/*/)
 
 # === Toolchain ================================================================
 CC      := cc
 CFLAGS  := -g -Wall -Wextra -std=gnu11 \
-           -I$(INC_DIR) -I$(CONCORD_DIR)/include
+           -I$(INC_DIR) $(addprefix -I,$(INC_SUBDIRS)) -I$(CONCORD_DIR)/include
 CPPFLAGS:= -MMD -MP
 
 # Concord itself needs pthread + curl to link.
@@ -32,6 +38,7 @@ $(TARGET): $(OBJS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDFLAGS) $(LDLIBS)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(OBJ_DIR) $(BIN_DIR):

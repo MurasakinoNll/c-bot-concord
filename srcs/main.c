@@ -1,14 +1,14 @@
-#include "channelutils.h"
-#include "customcom.h"
-#include "help.h"
-#include "mod.h"
-#include "msglimit.h"
-#include "ping.h"
-#include "ptyshell.h"
-#include "roleutils.h"
-#include "temp.h"
-#include "ticketsystem.h"
-#include "urban.h"
+#include "core/channelutils.h"
+#include "core/ticketsystem.h"
+#include "customcom/customcom.h"
+#include "misc/help.h"
+#include "mod/mod.h"
+#include "mod/msglimit.h"
+#include "roleutil/roleutils.h"
+#include "useful/ping.h"
+#include "useful/temp.h"
+#include "useful/urban.h"
+#include "utils/ptyshell.h"
 #include <concord/discord.h>
 #include <concord/discord_codecs.h>
 #include <concord/log.h>
@@ -18,8 +18,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <time.h>
-
-#include "msglimit.h"
 
 #define GUARDED(alias, fn)                                                     \
   static void alias##_guarded(struct discord *client,                          \

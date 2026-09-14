@@ -1,8 +1,8 @@
 #include <concord/discord.h>
 #include <sqlite3.h>
 #include <string.h>
-#include "customcom.h"
-#include "utils.h"
+#include "customcom//customcom.h"
+#include "utils/utils.h"
 static sqlite3 *db;
 static const struct {
   const char *name;
@@ -134,7 +134,7 @@ void cc_delete(struct discord *client, const struct discord_message *event, cons
   discord_create_message(client, event->channel_id, &reply, NULL);
 }
 
-#include "ccembed.h"  // likely temporary
+#include "customcom/ccembed.h"// likely temporary
 
 void cc_search(struct discord *client, const struct discord_message *event, const char *args) {
   char query[64] = "";

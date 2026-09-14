@@ -6,9 +6,9 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include "customcom.h"
-#include "ticketsystem.h"
-#include "utils.h"
+#include "customcom/customcom.h"
+#include "core/ticketsystem.h"
+#include "utils/utils.h"
 typedef struct {
   u64snowflake owner_id;
   int ticket_num;

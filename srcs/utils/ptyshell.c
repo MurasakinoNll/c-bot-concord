@@ -1,5 +1,5 @@
-#include "ptyshell.h"
-#include "utils.h"
+#include "utils/ptyshell.h"
+#include "utils/utils.h"
 #include <concord/log.h>
 #include <pty.h>
 #include <stdlib.h>

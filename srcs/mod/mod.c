@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
-#include "utils.h"
+#include "utils/utils.h"
 static void on_modaction_success(struct discord *client, struct discord_response *resp) {
   u64snowflake channel_id = (u64snowflake)(intptr_t)resp->data;
   char buf[256];

@@ -1,4 +1,4 @@
-#include "help.h"
+#include "misc/help.h"
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>

@@ -7,11 +7,11 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include "ccembed.h"
-#include "channelutils.h"
-#include "help.h"
-#include "urban.h"
-#include "utils.h"
+#include "customcom/ccembed.h"
+#include "core/channelutils.h"
+#include "misc/help.h"
+#include "useful/urban.h"
+#include "utils/utils.h"
 #define VCHANNEL 1155156372338524351
 #define ICON_URL "https://github.com/MurasakinoNll/c-bot-concord/blob/main/Cf.png?raw=true"
 
