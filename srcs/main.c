@@ -9,6 +9,7 @@
 #include "useful/temp.h"
 #include "useful/urban.h"
 #include "utils/ptyshell.h"
+#include "utils/serverport.h"
 #include <concord/discord.h>
 #include <concord/discord_codecs.h>
 #include <concord/log.h>
@@ -52,6 +53,7 @@ GUARDED(ping_command, ping_command)
 
 GUARDED(ptystart_command, ptystart_command)
 GUARDED(ptystop_command, ptystop_command)
+GUARDED(rolesync_command, rolesync_command)
 
 static struct discord *g_client;
 
@@ -94,6 +96,7 @@ int main(void) {
   customcom_init();
   ticket_db_init();
   msglimit_db_init();
+  rolesync_db_init();
 
   discord_set_on_ready(client, &on_ready);
   discord_set_prefix(client, "+");
@@ -126,10 +129,13 @@ int main(void) {
 
   discord_set_on_command(client, "ptystart", &ptystart_command_guarded);
   discord_set_on_command(client, "ptystop", &ptystop_command_guarded);
+  discord_set_on_command(client, "rolesync", &rolesync_command_guarded);
 
   discord_set_on_message_create(client, &on_message_fallback);
 
   discord_set_on_interaction_create(client, &on_interaction_create);
+
+  discord_set_on_guild_member_add(client, &on_guild_member_add_rolesync);
 
   discord_run(client);
 
