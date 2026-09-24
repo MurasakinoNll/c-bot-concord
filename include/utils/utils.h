@@ -10,9 +10,10 @@ typedef struct {
   int rolecount;
 } UserCtx;
 
-bool check_perm_byrole(const UserCtx *ctx, u64snowflake allowlist[], int allowrole_c);
+bool check_perm_byrole(const UserCtx *ctx, u64snowflake allowlist[],
+                       int allowrole_c);
 
-UserCtx get_ctx_from_interaction( const struct discord_interaction *event);
+UserCtx get_ctx_from_interaction(const struct discord_interaction *event);
 UserCtx get_ctx_from_message(const struct discord_message *event);
 bool ctx_has_role(const UserCtx *ctx, u64snowflake roleid);
 bool has_admin_bit(const UserCtx *ctx);
