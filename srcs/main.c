@@ -137,6 +137,9 @@ int main(void) {
 
   discord_set_on_guild_member_add(client, &on_guild_member_add_rolesync);
 
+  discord_set_on_guild_member_remove(client,
+                                     &on_guild_member_remove_ticket_close);
+
   discord_run(client);
 
   discord_cleanup(client);
