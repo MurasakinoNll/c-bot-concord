@@ -9,4 +9,7 @@ void channel_create(struct discord *client,
 void close_ticket(struct discord *client, const struct discord_message *event);
 void on_guild_member_remove_ticket_close(
     struct discord *client, const struct discord_guild_member_remove *event);
+
+void ticketsweep_command(struct discord *client,
+                         const struct discord_message *event);
 #endif

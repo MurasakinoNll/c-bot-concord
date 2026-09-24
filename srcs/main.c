@@ -31,6 +31,7 @@
 GUARDED(helper, helper)
 GUARDED(ticketinit, ticketinit)
 GUARDED(json_builder, json_builder)
+GUARDED(ticketsweep_command, ticketsweep_command)
 GUARDED(role_create, role_create)
 GUARDED(role_delete, role_delete)
 GUARDED(role_member_add, role_member_add)
@@ -105,6 +106,7 @@ int main(void) {
   discord_set_on_command(client, "help", &helper_guarded);
   discord_set_on_command(client, "embed", &ticketinit_guarded);
   discord_set_on_command(client, "builder", &json_builder_guarded);
+  discord_set_on_command(client, "ticketsweep", &ticketsweep_command_guarded);
   discord_set_on_command(client, "rolecreate", &role_create_guarded);
   discord_set_on_command(client, "roledelete", &role_delete_guarded);
   discord_set_on_command(client, "roleadd", &role_member_add_guarded);

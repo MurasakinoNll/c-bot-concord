@@ -264,3 +264,96 @@ void on_guild_member_remove_ticket_close(
   }
   sqlite3_finalize(stmt);
 }
+
+typedef struct {
+  u64snowflake channel_id;
+  int ticket_num;
+  char owner_username[64];
+} sweep_item;
+
+#define SWEEP_MAX_ITEMS 256
+
+typedef struct {
+  sweep_item items[SWEEP_MAX_ITEMS];
+  int count;
+  int index;
+  u64snowflake report_channel_id;
+  unsigned timer_id;
+} sweep_state;
+
+static sweep_state g_sweep = {0};
+
+static void sweep_tick(struct discord *client, struct discord_timer *timer) {
+  sweep_state *state = (sweep_state *)timer->data;
+
+  if (state->index >= state->count) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "Ticket sweep complete: %d ticket(s) closed.",
+             state->count);
+    struct discord_create_message reply = {.content = buf};
+    discord_create_message(client, state->report_channel_id, &reply, NULL);
+    discord_timer_cancel_and_delete(client, state->timer_id);
+    state->timer_id = 0;
+    return;
+  }
+
+  sweep_item *item = &state->items[state->index];
+  close_ticket_channel(client, item->channel_id, item->owner_username,
+                       item->ticket_num);
+  state->index++;
+}
+
+void ticketsweep_command(struct discord *client,
+                         const struct discord_message *event) {
+  if (event->author->bot)
+    return;
+
+  UserCtx ctx = get_ctx_from_message(event);
+  u64snowflake allowlist[] = {1155152569526669391ULL};
+  if (!check_perm_byrole(&ctx, allowlist, 1)) {
+    fprintf(stderr, "ticketsweep rejected, invalid permissions\n");
+    return;
+  }
+
+  if (g_sweep.timer_id) {
+    struct discord_create_message reply = {
+        .content = "A ticket sweep is already running."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
+  sqlite3 *db = customcom_get_db();
+  sqlite3_stmt *stmt;
+  sqlite3_prepare_v2(db,
+                     "SELECT channel_id, ticket_num, owner_username FROM "
+                     "tickets WHERE status = 'open'",
+                     -1, &stmt, NULL);
+
+  g_sweep.count = 0;
+  while (g_sweep.count < SWEEP_MAX_ITEMS && sqlite3_step(stmt) == SQLITE_ROW) {
+    sweep_item *item = &g_sweep.items[g_sweep.count];
+    item->channel_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
+    item->ticket_num = sqlite3_column_int(stmt, 1);
+    strncpy(item->owner_username, (const char *)sqlite3_column_text(stmt, 2),
+            sizeof(item->owner_username) - 1);
+    g_sweep.count++;
+  }
+  sqlite3_finalize(stmt);
+
+  if (g_sweep.count == 0) {
+    struct discord_create_message reply = {.content =
+                                               "No open tickets to sweep."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
+  g_sweep.index = 0;
+  g_sweep.report_channel_id = event->channel_id;
+  g_sweep.timer_id =
+      discord_timer_interval(client, &sweep_tick, NULL, &g_sweep, 0, 750, -1);
+
+  char buf[64];
+  snprintf(buf, sizeof buf, "sweeping %d open ticket(s)...", g_sweep.count);
+  struct discord_create_message reply = {.content = buf};
+  discord_create_message(client, event->channel_id, &reply, NULL);
+}
