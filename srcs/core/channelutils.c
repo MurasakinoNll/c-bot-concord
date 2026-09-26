@@ -231,6 +231,15 @@ static void close_ticket_channel(struct discord *client,
       .parent_id = TICKET_ARCHIVE_CATEGORY,
   };
   discord_modify_channel(client, channel_id, &params, NULL);
+
+  sqlite3 *db = customcom_get_db();
+  sqlite3_stmt *stmt;
+  sqlite3_prepare_v2(
+      db, "UPDATE tickets SET status = 'closed' WHERE channel_id = ?", -1,
+      &stmt, NULL);
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
 }
 
 void on_guild_member_remove_ticket_close(

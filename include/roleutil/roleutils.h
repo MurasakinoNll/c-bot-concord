@@ -15,6 +15,6 @@ void undungeon(struct discord *client, const struct discord_message *event);
 void dungeon(struct discord *client, const struct discord_message *event);
 
 void cocverify(struct discord *client, const struct discord_message *event);
-
+void hell(struct discord *client, const struct discord_message *event);
 void harakdoor(struct discord *client, const struct discord_message *event);
 #endif // !ROLEUTILS_H

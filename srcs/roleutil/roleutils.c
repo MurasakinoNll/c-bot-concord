@@ -300,3 +300,30 @@ void verify(struct discord *client, const struct discord_message *event) {
       client, event->guild_id, uid, UNVERIFIED,
       &(struct discord_remove_guild_member_role){0}, &ret);
 }
+
+void hell(struct discord *client, const struct discord_message *event) {
+  if (event->author->bot)
+    return;
+
+  UserCtx ctx = get_ctx_from_message(event);
+  u64snowflake allowlist[] = {1155152569526669391ULL};
+  if (!check_perm_byrole(&ctx, allowlist, 1)) {
+    fprintf(stderr, "verify rejected, invalid permissions\n");
+    return;
+  }
+  u64snowflake uid = 0;
+  if (event->mentions && event->mentions->size > 0) {
+    uid = event->mentions->array[0].id;
+  } else {
+    sscanf(event->content, " %" SCNu64, &uid);
+  }
+  if (!uid) {
+    fprintf(stderr, "verify invalid uid\n");
+    return;
+  }
+#define GLUELESSMAGIC 1209470829788794901
+
+  discord_add_guild_member_role(client, event->guild_id, uid, GLUELESSMAGIC,
+                                &(struct discord_add_guild_member_role){0},
+                                NULL);
+}

@@ -49,6 +49,7 @@ GUARDED(unmute, unmute)
 GUARDED(dungeon, dungeon)
 GUARDED(undungeon, undungeon)
 GUARDED(harakdoor, harakdoor)
+GUARDED(hell, hell)
 GUARDED(urban_command, urban_command)
 GUARDED(temp_command, temp_command)
 GUARDED(ping_command, ping_command)
@@ -126,7 +127,8 @@ int main(void) {
 
   discord_set_on_command(client, "dungeon", &dungeon_guarded);
   discord_set_on_command(client, "undungeon", &undungeon_guarded);
-  discord_set_on_command(client, "harakdoor", harakdoor_guarded);
+  discord_set_on_command(client, "harakdoor", &harakdoor_guarded);
+  discord_set_on_command(client, "hell", &hell_guarded);
   discord_set_on_command(client, "urban", &urban_command_guarded);
   discord_set_on_command(client, "temp", &temp_command_guarded);
   discord_set_on_command(client, "ping", &ping_command_guarded);

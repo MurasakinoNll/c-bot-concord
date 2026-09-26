@@ -76,7 +76,7 @@ void mute(struct discord *client, const struct discord_message *event) {
 
   if (event->mentions && event->mentions->size > 0) {
     uid = event->mentions->array[0].id;
-    sscanf(event->content, "%*s %*s %d", &minutes);
+    sscanf(event->content, "%*s %d", &minutes);
   } else {
     sscanf(event->content, " %" SCNu64 " %d", &uid, &minutes);
   }
