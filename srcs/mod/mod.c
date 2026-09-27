@@ -29,8 +29,12 @@ on_modaction_member_success(struct discord *client,
 static void on_modaction_fail(struct discord *client,
                               struct discord_response *resp) {
   u64snowflake channel_id = (u64snowflake)(intptr_t)resp->data;
-  char buf[256];
-  snprintf(buf, sizeof buf, "err: %s", discord_strerror(resp->code, client));
+  char buf[512];
+  if (resp->raw_error) {
+    snprintf(buf, sizeof buf, "err: %s", resp->raw_error);
+  } else {
+    snprintf(buf, sizeof buf, "err: %s", discord_strerror(resp->code, client));
+  }
   struct discord_create_message params = {.content = buf};
   discord_create_message(client, channel_id, &params, NULL);
 }

@@ -6,7 +6,6 @@
 #include "utils/utils.h"
 #include <concord/discord.h>
 #include <concord/discord_codecs.h>
-#include <concord/error.h>
 #include <concord/interaction.h>
 #include <concord/log.h>
 #include <concord/types.h>
@@ -213,7 +212,6 @@ void json_builder(struct discord *client, const struct discord_message *event) {
   discord_embed_set_image(&embed, ICON_URL, NULL, 0, 0);
   discord_embed_set_author(&embed, "jarking it",
                            "https://github.com/MurasakinoNll", NULL, NULL);
-
   discord_embed_add_field(&embed, "extra field1",
                           "blabla: "
                           "blabla?",
