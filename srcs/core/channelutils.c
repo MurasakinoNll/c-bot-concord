@@ -188,6 +188,12 @@ static bool ticket_find_by_channel(u64snowflake channel_id, ticket_row *out) {
 void close_ticket(struct discord *client, const struct discord_message *event) {
   if (event->author->bot)
     return;
+  UserCtx ctx = get_ctx_from_message(event);
+  u64snowflake allowlist[] = {1155152569526669391ULL};
+  if (!check_perm_byrole(&ctx, allowlist, 1)) {
+    fprintf(stderr, "ban rejected, invalid permissions\n");
+    return;
+  }
 
   ticket_row row;
   if (!ticket_find_by_channel(event->channel_id, &row)) {
@@ -196,19 +202,6 @@ void close_ticket(struct discord *client, const struct discord_message *event) {
     discord_create_message(client, event->channel_id, &reply, NULL);
     return;
   }
-
-  UserCtx ctx = get_ctx_from_message(event);
-  u64snowflake allowlist[] = {1155152569526669391ULL};
-  bool is_owner = (event->author->id == row.owner_id);
-  bool is_mod = check_perm_byrole(&ctx, allowlist, 1);
-
-  if (!is_owner && !is_mod) {
-    struct discord_create_message reply = {
-        .content = "You don't have permission to close this ticket."};
-    discord_create_message(client, event->channel_id, &reply, NULL);
-    return;
-  }
-
   close_ticket_channel(client, event->channel_id, row.owner_username,
                        row.ticket_num);
 
