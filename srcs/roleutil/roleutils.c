@@ -160,6 +160,9 @@ void harakdoor(struct discord *client, const struct discord_message *event) {
   discord_add_guild_member_role(
       client, 1155152569040130101, 821998767652995083, STFMAGIC,
       &(struct discord_add_guild_member_role){0}, NULL);
+  discord_add_guild_member_role(
+      client, 1155152569040130101, 821998767652995083, 1205172151624405093ULL,
+      &(struct discord_add_guild_member_role){0}, NULL);
 }
 
 void dungeon(struct discord *client, const struct discord_message *event) {
