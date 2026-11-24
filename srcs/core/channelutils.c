@@ -9,6 +9,10 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+
+#define TICKET_GUILD_ID 1155152569040130101ULL
+#define TICKET_ARCHIVE_CATEGORY 1552818898947145768ULL
+
 typedef struct {
   u64snowflake owner_id;
   int ticket_num;
@@ -75,22 +79,25 @@ void ticket_db_init(void) {
       NULL, NULL, NULL);
 }
 
-static u64snowflake ticket_find_open(u64snowflake owner_id) {
+static bool ticket_find_open(u64snowflake owner_id, u64snowflake *found) {
+  if (!found)
+    return false;
+  *found = 0;
+
   sqlite3 *db = customcom_get_db();
   sqlite3_stmt *stmt = NULL;
-  u64snowflake found = 0;
-
   if (sqlite3_prepare_v2(
           db,
           "SELECT channel_id FROM tickets WHERE owner_id = ? AND status = 'open'",
           -1, &stmt, NULL) != SQLITE_OK)
-    return 0;
+    return false;
+
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)owner_id);
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    found = (u64snowflake)sqlite3_column_int64(stmt, 0);
-  }
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW)
+    *found = (u64snowflake)sqlite3_column_int64(stmt, 0);
   sqlite3_finalize(stmt);
-  return found;
+  return rc == SQLITE_ROW || rc == SQLITE_DONE;
 }
 
 static bool ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
@@ -122,6 +129,20 @@ static bool ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
 
 void channel_create(struct discord *client,
                     const struct discord_interaction *event) {
+  if (!event)
+    return;
+  if (event->guild_id != TICKET_GUILD_ID) {
+    struct discord_interaction_response denied = {
+        .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
+        .data = &(struct discord_interaction_callback_data){
+            .content = "Tickets can only be created in the configured support server.",
+            .flags = DISCORD_MESSAGE_EPHEMERAL,
+        },
+    };
+    discord_create_interaction_response(client, event->id, event->token,
+                                        &denied, NULL);
+    return;
+  }
   if (!event->member || !event->member->user ||
       !event->member->user->username) {
     log_error(
@@ -131,7 +152,19 @@ void channel_create(struct discord *client,
 
   u64snowflake owner_id = event->member->user->id;
 
-  u64snowflake existing = ticket_find_open(owner_id);
+  u64snowflake existing = 0;
+  if (!ticket_find_open(owner_id, &existing)) {
+    struct discord_interaction_response failed = {
+        .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
+        .data = &(struct discord_interaction_callback_data){
+            .content = "Ticket storage is unavailable. Please try again later.",
+            .flags = DISCORD_MESSAGE_EPHEMERAL,
+        },
+    };
+    discord_create_interaction_response(client, event->id, event->token,
+                                        &failed, NULL);
+    return;
+  }
   if (existing) {
     char buf[100];
     snprintf(buf, sizeof buf, "You already have an open ticket: <#%" PRIu64 ">",
@@ -263,8 +296,14 @@ static bool ticket_find_by_channel(u64snowflake channel_id, ticket_row *out) {
 }
 
 void close_ticket(struct discord *client, const struct discord_message *event) {
-  if (event->author->bot)
+  if (!event || !event->author || event->author->bot)
     return;
+  if (event->guild_id != TICKET_GUILD_ID) {
+    struct discord_create_message reply = {
+        .content = "Ticket closure is only available in the configured support server."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
   UserCtx ctx = get_ctx_from_message(event);
   u64snowflake allowlist[] = {1155152569526669391ULL};
   if (!check_perm_byrole(&ctx, allowlist, 1)) {
@@ -282,14 +321,11 @@ void close_ticket(struct discord *client, const struct discord_message *event) {
   ticket_close_channel(client, event->channel_id, row.owner_username,
                        row.ticket_num, event->channel_id, NULL);
 }
-#define TICKET_GUILD_ID 1155152569040130101ULL
-#define TICKET_ARCHIVE_CATEGORY 1552818898947145768ULL
-
 static bool ticket_mark_closed(u64snowflake channel_id) {
   sqlite3 *db = customcom_get_db();
   sqlite3_stmt *stmt = NULL;
   if (sqlite3_prepare_v2(
-          db, "UPDATE tickets SET status = 'closed' WHERE channel_id = ?",
+          db, "UPDATE tickets SET status = 'closed' WHERE channel_id = ? AND status = 'open'",
           -1, &stmt, NULL) != SQLITE_OK)
     return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
@@ -480,8 +516,14 @@ static void sweep_tick(struct discord *client, struct discord_timer *timer) {
 
 void ticketsweep_command(struct discord *client,
                          const struct discord_message *event) {
-  if (event->author->bot)
+  if (!event || !event->author || event->author->bot)
     return;
+  if (event->guild_id != TICKET_GUILD_ID) {
+    struct discord_create_message reply = {
+        .content = "Ticket sweeps are only available in the configured support server."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
   UserCtx ctx = get_ctx_from_message(event);
   u64snowflake allowlist[] = {1155152569526669391ULL};
@@ -509,15 +551,31 @@ void ticketsweep_command(struct discord *client,
   }
 
   g_sweep.count = 0;
-  while (g_sweep.count < SWEEP_MAX_ITEMS && sqlite3_step(stmt) == SQLITE_ROW) {
+  bool too_many_tickets = false;
+  int step_rc = SQLITE_DONE;
+  while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    if (g_sweep.count == SWEEP_MAX_ITEMS) {
+      too_many_tickets = true;
+      break;
+    }
     sweep_item *item = &g_sweep.items[g_sweep.count];
     item->channel_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
     item->ticket_num = sqlite3_column_int(stmt, 1);
-    strncpy(item->owner_username, (const char *)sqlite3_column_text(stmt, 2),
-            sizeof(item->owner_username) - 1);
+    const unsigned char *username = sqlite3_column_text(stmt, 2);
+    snprintf(item->owner_username, sizeof item->owner_username, "%s",
+             username ? (const char *)username : "unknown");
     g_sweep.count++;
   }
   sqlite3_finalize(stmt);
+
+  if (too_many_tickets || step_rc != SQLITE_DONE) {
+    struct discord_create_message reply = {
+        .content = too_many_tickets
+                       ? "More than 256 tickets are open. No sweep was started; reduce the queue or raise the reviewed safety limit."
+                       : "Ticket records could not be read completely. No sweep was started."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
   if (g_sweep.count == 0) {
     struct discord_create_message reply = {.content =
@@ -533,6 +591,12 @@ void ticketsweep_command(struct discord *client,
   g_sweep.report_channel_id = event->channel_id;
   g_sweep.timer_id =
       discord_timer_interval(client, &sweep_tick, NULL, &g_sweep, 0, 750, -1);
+  if (!g_sweep.timer_id) {
+    struct discord_create_message reply = {
+        .content = "Unable to start the ticket sweep timer. No tickets were processed."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
   char buf[64];
   snprintf(buf, sizeof buf, "sweeping %d open ticket(s)...", g_sweep.count);
