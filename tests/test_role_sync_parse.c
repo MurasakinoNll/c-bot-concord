@@ -38,11 +38,12 @@ int main(void) {
 
   a = 11;
   b = 22;
-  label = (const char *)1;
+  const char *sentinel = "unchanged";
+  label = sentinel;
   assert(!rolesync_parse_pair("123 +456", &a, &b, &label));
-  assert(a == 11 && b == 22 && label == (const char *)1);
+  assert(a == 11 && b == 22 && label == sentinel);
   assert(!rolesync_parse_pair("123 18446744073709551616", &a, &b, &label));
-  assert(a == 11 && b == 22 && label == (const char *)1);
+  assert(a == 11 && b == 22 && label == sentinel);
   assert(!rolesync_parse_pair("123 0", &a, &b, &label));
   assert(!rolesync_parse_pair("123x 456", &a, &b, &label));
 
