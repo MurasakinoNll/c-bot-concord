@@ -268,7 +268,7 @@ static void cc_cache_insert(const char *name, const char *response, int cooldown
     return;
   cc_node *existing = cc_lookup(name);
   if (existing) {
-    strncpy(existing->response, response, sizeof(existing->response) - 1);
+    snprintf(existing->response, sizeof existing->response, "%s", response);
     existing->cooldown = cooldown;
     return;
   }
@@ -277,8 +277,8 @@ static void cc_cache_insert(const char *name, const char *response, int cooldown
     fprintf(stderr, "cc: unable to allocate custom-command cache entry\n");
     return;
   }
-  strncpy(n->name, name, sizeof(n->name) - 1);
-  strncpy(n->response, response, sizeof(n->response) - 1);
+  snprintf(n->name, sizeof n->name, "%s", name);
+  snprintf(n->response, sizeof n->response, "%s", response);
   n->cooldown = cooldown;
   unsigned long h = djb2(name) % CC_BUCKETS;
   n->next = cc_table[h];
