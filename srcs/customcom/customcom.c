@@ -1,6 +1,7 @@
 #include <concord/discord.h>
 #include <concord/log.h>
 #include <sqlite3.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -184,30 +185,105 @@ void cc_search(struct discord *client, const struct discord_message *event, cons
   ccembed_send_page(client, event->channel_id, event->author->id, query, 0);
 }
 
-void cc_cooldown(struct discord *client, const struct discord_message *event, const char *args) {
-  if (event->author->bot) return;
+static bool parse_nonnegative_int(const char *text, int *out) {
+  if (!text || !out || *text < '0' || *text > '9')
+    return false;
+  int value = 0;
+  for (const char *p = text; *p; ++p) {
+    if (*p < '0' || *p > '9')
+      return false;
+    int digit = *p - '0';
+    if (value > (INT_MAX - digit) / 10)
+      return false;
+    value = value * 10 + digit;
+  }
+  *out = value;
+  return true;
+}
+
+static bool only_space_remains(const char *text) {
+  if (!text)
+    return false;
+  while (*text == ' ' || *text == '\\t' || *text == '\\r' || *text == '\\n')
+    ++text;
+  return *text == '\\0';
+}
+
+void cc_cooldown(struct discord *client, const struct discord_message *event,
+                 const char *args) {
+  if (event->author->bot)
+    return;
 
   UserCtx ctx = get_ctx_from_message(event);
-  u64snowflake allowlist[] = { 1155152569526669391ULL };
-  if (!check_perm_byrole(&ctx, allowlist, 1)){
-    fprintf(stderr, "cc_cooldown rejected, invalid permissions\n");
+  u64snowflake allowlist[] = {1155152569526669391ULL};
+  if (!check_perm_byrole(&ctx, allowlist, 1)) {
+    fprintf(stderr, "cc_cooldown rejected, invalid permissions\\n");
     return;
   }
 
-  char name[64] = "";
-  int seconds = -1;
-  int matched = sscanf(args, " %63s %d", name, &seconds);
-
-  if (matched < 1 || !*name || (matched >= 2 && seconds < 0)) {
-    fprintf(stderr, "cc cooldown: usage <name> [seconds]\n");
+  char name[64] = "", seconds_token[32] = "";
+  int first_end = 0, second_end = 0;
+  int matched =
+      sscanf(args, " %63s%n %31s%n", name, &first_end, seconds_token,
+             &second_end);
+  int seconds = 0;
+  if (matched < 1 || !*name ||
+      (matched == 1 && !only_space_remains(args + first_end)) ||
+      (matched == 2 &&
+       (!only_space_remains(args + second_end) ||
+        !parse_nonnegative_int(seconds_token, &seconds)))) {
+    fprintf(stderr, "cc cooldown: usage <name> [non-negative seconds]\\n");
     return;
   }
 
   char buf[128];
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = NULL;
 
   if (matched == 1) {
-    /* view mode */
+    if (sqlite3_prepare_v2(
+            db, "SELECT cooldown FROM customcoms WHERE name = ?", -1, &stmt,
+            NULL) != SQLITE_OK) {
+      snprintf(buf, sizeof buf, "Database error reading cooldown.");
+    } else {
+      sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(stmt) == SQLITE_ROW) {
+        snprintf(buf, sizeof buf, "Cooldown for '%s': %ds", name,
+                 sqlite3_column_int(stmt, 0));
+      } else {
+        snprintf(buf, sizeof buf, "No command named '%s'.", name);
+      }
+      sqlite3_finalize(stmt);
+    }
+  } else {
+    if (sqlite3_prepare_v2(
+            db, "UPDATE customcoms SET cooldown = ? WHERE name = ?", -1,
+            &stmt, NULL) != SQLITE_OK) {
+      snprintf(buf, sizeof buf, "Database error updating cooldown.");
+    } else {
+      sqlite3_bind_int(stmt, 1, seconds);
+      sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
+      int rc = sqlite3_step(stmt);
+      int changed = sqlite3_changes(db);
+      sqlite3_finalize(stmt);
+
+      if (rc != SQLITE_DONE) {
+        snprintf(buf, sizeof buf, "Database error updating cooldown.");
+      } else if (changed > 0) {
+        snprintf(buf, sizeof buf, "Cooldown for '%s' set to %ds.", name,
+                 seconds);
+        cc_node *cached = cc_lookup(name);
+        if (cached)
+          cached->cooldown = seconds;
+      } else {
+        snprintf(buf, sizeof buf, "No command named '%s'.", name);
+      }
+    }
+  }
+
+  struct discord_create_message reply = {.content = buf};
+  discord_create_message(client, event->channel_id, &reply, NULL);
+}
+/* view mode */
     sqlite3_prepare_v2(db, "SELECT cooldown FROM customcoms WHERE name = ?", -1, &stmt, NULL);
     sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
