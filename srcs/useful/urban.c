@@ -223,7 +223,7 @@ void urban_command(struct discord *client, const struct discord_message *event) 
     return;
 
   char term[128] = "";
-  if (sscanf(event->content, " %127[^\\n]", term) != 1 || !*term) {
+  if (sscanf(event->content, " %127[^\n]", term) != 1 || !*term) {
     struct discord_create_message reply = {.content = "Usage: +urban <term>"};
     discord_create_message(client, event->channel_id, &reply, NULL);
     return;
