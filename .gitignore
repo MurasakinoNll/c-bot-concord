@@ -8,6 +8,10 @@ ignore/
 asms/
 bins/
 __pycache__/
+# Runtime databases and backups (never commit live bot state)
+*.db
+*.db-*
+
 # Common junk
 *.o
 *.d
