@@ -15,6 +15,10 @@ typedef struct {
   char owner_username[64];
 } ticket_row;
 
+static bool close_ticket_channel(struct discord *client,
+                                 u64snowflake channel_id,
+                                 const char *owner_username, int ticket_num);
+
 void ticket_db_init(void) {
   sqlite3 *db = customcom_get_db();
   sqlite3_exec(db,
