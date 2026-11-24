@@ -204,9 +204,9 @@ static bool parse_nonnegative_int(const char *text, int *out) {
 static bool only_space_remains(const char *text) {
   if (!text)
     return false;
-  while (*text == ' ' || *text == '\\t' || *text == '\\r' || *text == '\\n')
+  while (*text == ' ' || *text == '\${ch}' || *text == '\${ch}' || *text == '\${ch}')
     ++text;
-  return *text == '\\0';
+  return *text == '\${ch}';
 }
 
 void cc_cooldown(struct discord *client, const struct discord_message *event,
@@ -217,7 +217,7 @@ void cc_cooldown(struct discord *client, const struct discord_message *event,
   UserCtx ctx = get_ctx_from_message(event);
   u64snowflake allowlist[] = {1155152569526669391ULL};
   if (!check_perm_byrole(&ctx, allowlist, 1)) {
-    fprintf(stderr, "cc_cooldown rejected, invalid permissions\\n");
+    fprintf(stderr, "cc_cooldown rejected, invalid permissions\n");
     return;
   }
 
@@ -232,7 +232,7 @@ void cc_cooldown(struct discord *client, const struct discord_message *event,
       (matched == 2 &&
        (!only_space_remains(args + second_end) ||
         !parse_nonnegative_int(seconds_token, &seconds)))) {
-    fprintf(stderr, "cc cooldown: usage <name> [non-negative seconds]\\n");
+    fprintf(stderr, "cc cooldown: usage <name> [non-negative seconds]\n");
     return;
   }
 
