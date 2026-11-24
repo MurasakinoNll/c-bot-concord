@@ -283,37 +283,7 @@ void cc_cooldown(struct discord *client, const struct discord_message *event,
   struct discord_create_message reply = {.content = buf};
   discord_create_message(client, event->channel_id, &reply, NULL);
 }
-/* view mode */
-    sqlite3_prepare_v2(db, "SELECT cooldown FROM customcoms WHERE name = ?", -1, &stmt, NULL);
-    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-      snprintf(buf, sizeof buf, "Cooldown for '%s': %ds", name, sqlite3_column_int(stmt, 0));
-    } else {
-      snprintf(buf, sizeof buf, "No command named '%s'.", name);
-    }
-    sqlite3_finalize(stmt);
-  } else {
-    /* set mode */
-    sqlite3_prepare_v2(db, "UPDATE customcoms SET cooldown = ? WHERE name = ?", -1, &stmt, NULL);
-    sqlite3_bind_int(stmt, 1, seconds);
-    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_STATIC);
-    sqlite3_step(stmt);
-    int changed = sqlite3_changes(db);
-    sqlite3_finalize(stmt);
-
-    if (changed > 0) {
-      snprintf(buf, sizeof buf, "Cooldown for '%s' set to %ds.", name, seconds);
-      cc_node *cached = cc_lookup(name);
-      if (cached)
-        cached->cooldown = seconds;
-    } else {
-      snprintf(buf, sizeof buf, "No command named '%s'.", name);
-    }
-  }
-
-  struct discord_create_message reply = { .content = buf };
-  discord_create_message(client, event->channel_id, &reply, NULL);
-}/* 
+/* 
  *  IMPORTANT: this is very very experimental 99% chance it breaks
  *  if anything goes wrong its probably this
  * */
