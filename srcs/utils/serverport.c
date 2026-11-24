@@ -262,51 +262,81 @@ static void on_rolesync_fail(struct discord *client,
   fprintf(stderr, "rolesync: add_guild_member_role failed, code=%d\n",
           resp->code);
 }
-void on_guild_member_add_rolesync(struct discord *client,
-                                  const struct discord_guild_member *event) {
-  if (!event->guild_id || event->guild_id != GUILD_B_ID)
-    return;
-  if (!event->user)
+static void on_rolesync_member_lookup_fail(struct discord *client,
+                                               struct discord_response *resp) {
+  const struct discord_guild_member *event = resp->keep;
+  if (event && event->user) {
+    log_info("rolesync: source-guild lookup failed for user %" PRIu64
+             " (Discord code %d)",
+             event->user->id, resp->code);
+  }
+  (void)client;
+}
+
+static void on_rolesync_member_lookup_done(
+    struct discord *client, struct discord_response *resp,
+    const struct discord_guild_member *member_a) {
+  const struct discord_guild_member *event = resp->keep;
+  if (!event || !event->user || !member_a || !member_a->roles)
     return;
 
   u64snowflake uid = event->user->id;
-
-  struct discord_guild_member member_a = {0};
-  struct discord_ret_guild_member ret = {.sync = &member_a};
-  if (discord_get_guild_member(client, GUILD_A_ID, uid, &ret) != CCORD_OK) {
-    log_info("rolesync: user %" PRIu64
-             " not found in source guild, skipping sync",
-             uid);
-    return;
-  }
-  if (!member_a.roles)
-    return;
-
   sqlite3 *db = customcom_get_db();
+  int queued = 0;
 
-  for (int i = 0; i < member_a.roles->size; i++) {
-    u64snowflake a_role = member_a.roles->array[i];
-
-    sqlite3_stmt *stmt;
-    sqlite3_prepare_v2(
-        db,
-        "SELECT guild_b_role_id FROM role_sync_map WHERE guild_a_role_id = ?",
-        -1, &stmt, NULL);
+  for (int i = 0; i < member_a->roles->size; i++) {
+    u64snowflake a_role = member_a->roles->array[i];
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT guild_b_role_id FROM role_sync_map WHERE guild_a_role_id = ?",
+            -1, &stmt, NULL) != SQLITE_OK) {
+      log_error("rolesync: failed to prepare role mapping lookup");
+      continue;
+    }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)a_role);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       u64snowflake b_role = (u64snowflake)sqlite3_column_int64(stmt, 0);
       sqlite3_finalize(stmt);
 
       struct discord_add_guild_member_role params = {.reason = "rolesync"};
-      struct discord_ret ret2 = {.fail = &on_rolesync_fail};
-      discord_add_guild_member_role(client, GUILD_B_ID, uid, b_role, &params,
-                                    &ret2);
+      struct discord_ret ret = {.fail = &on_rolesync_fail};
+      CCORDcode status =
+          discord_add_guild_member_role(client, GUILD_B_ID, uid, b_role,
+                                        &params, &ret);
+      if (status == CCORD_PENDING)
+        queued++;
+      else
+        log_error("rolesync: failed to queue role grant %" PRIu64
+                  " for user %" PRIu64 " (code %d)",
+                  b_role, uid, status);
     } else {
       sqlite3_finalize(stmt);
     }
   }
 
-  log_info("rolesync: synced roles for user %" PRIu64 " into guild B", uid);
+  log_info("rolesync: queued %d role grant(s) for user %" PRIu64
+           " in guild B",
+           queued, uid);
+}
+
+void on_guild_member_add_rolesync(struct discord *client,
+                                  const struct discord_guild_member *event) {
+  if (!event || !event->guild_id || event->guild_id != GUILD_B_ID ||
+      !event->user)
+    return;
+
+  struct discord_ret_guild_member ret = {
+      .done = &on_rolesync_member_lookup_done,
+      .fail = &on_rolesync_member_lookup_fail,
+      .keep = event,
+  };
+  CCORDcode status =
+      discord_get_guild_member(client, GUILD_A_ID, event->user->id, &ret);
+  if (status != CCORD_PENDING)
+    log_error("rolesync: failed to queue source-guild member lookup for user %"
+              PRIu64 " (code %d)",
+              event->user->id, status);
 }
 
 static void rolesync_generate(struct discord *client,
