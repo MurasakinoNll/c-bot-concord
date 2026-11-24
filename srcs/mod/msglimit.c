@@ -3,6 +3,7 @@
 #include "utils/utils.h"
 #include <concord/discord_codecs.h>
 #include <sqlite3.h>
+#include <concord/log.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,12 +31,17 @@ void msglimit_db_init(void) {
                NULL, NULL, NULL);
 }
 
-static void get_today_utc(char *buf, size_t sz) {
+static bool get_today_utc(char *buf, size_t sz) {
+  if (!buf || sz == 0)
+    return false;
   time_t now = time(NULL);
-  struct tm *tmv = gmtime(&now);
-  strftime(buf, sz, "%Y-%m-%d", tmv);
+  if (now == (time_t)-1)
+    return false;
+  struct tm utc;
+  if (!gmtime_r(&now, &utc))
+    return false;
+  return strftime(buf, sz, "%Y-%m-%d", &utc) > 0;
 }
-
 static bool message_is_media(const struct discord_message *event) {
   if (event->attachments && event->attachments->size > 0)
     return true;
@@ -121,14 +127,34 @@ void msglimit_command(struct discord *client,
   discord_create_message(client, event->channel_id, &reply, NULL);
 }
 
+static bool msglimit_begin(sqlite3 *db) {
+  return db && sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) ==
+                   SQLITE_OK;
+}
+
+static void msglimit_rollback(sqlite3 *db) {
+  if (db)
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+}
+
+static bool msglimit_commit(sqlite3 *db) {
+  if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK)
+    return true;
+  msglimit_rollback(db);
+  return false;
+}
+
 bool msglimit_enforce(struct discord *client,
                       const struct discord_message *event) {
-  if (!event || !event->author || event->author->bot || !event->guild_id)
+  if (!event || !event->author || event->author->bot || !event->guild_id ||
+      !event->id)
     return false;
 
   sqlite3 *db = customcom_get_db();
+  if (!db)
+    return false;
   sqlite3_stmt *stmt = NULL;
-  int text_limit = 0, media_limit = 0;
+  sqlite3_int64 text_limit = 0, media_limit = 0;
 
   if (sqlite3_prepare_v2(db,
                          "SELECT text_limit, media_limit FROM msglimit_settings "
@@ -137,17 +163,24 @@ bool msglimit_enforce(struct discord *client,
     return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    text_limit = sqlite3_column_int(stmt, 0);
-    media_limit = sqlite3_column_int(stmt, 1);
+  int settings_rc = sqlite3_step(stmt);
+  if (settings_rc == SQLITE_ROW) {
+    text_limit = sqlite3_column_int64(stmt, 0);
+    media_limit = sqlite3_column_int64(stmt, 1);
   }
   sqlite3_finalize(stmt);
+  if (settings_rc != SQLITE_ROW && settings_rc != SQLITE_DONE)
+    return false;
 
   char day[16];
-  get_today_utc(day, sizeof day);
+  if (!get_today_utc(day, sizeof day))
+    return false;
   bool is_media = message_is_media(event);
-  int limit = is_media ? media_limit : text_limit;
+  sqlite3_int64 limit = is_media ? media_limit : text_limit;
   const char *col = is_media ? "media_count" : "text_count";
+
+  if (!msglimit_begin(db))
+    return false;
 
   if (sqlite3_prepare_v2(
           db,
@@ -155,16 +188,23 @@ bool msglimit_enforce(struct discord *client,
           "(message_id, guild_id, user_id, day, is_media, counted) "
           "VALUES (?, ?, ?, ?, ?, 0)",
           -1, &stmt, NULL) != SQLITE_OK)
-    return false;
+    goto rollback;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 3, (sqlite3_int64)event->author->id);
   sqlite3_bind_text(stmt, 4, day, -1, SQLITE_TRANSIENT);
   sqlite3_bind_int(stmt, 5, is_media ? 1 : 0);
   int insert_rc = sqlite3_step(stmt);
+  int inserted = sqlite3_changes(db);
   sqlite3_finalize(stmt);
-  if (insert_rc != SQLITE_DONE || sqlite3_changes(db) == 0 || limit <= 0)
+  stmt = NULL;
+  if (insert_rc != SQLITE_DONE)
+    goto rollback;
+  if (inserted == 0 || limit <= 0) {
+    if (!msglimit_commit(db))
+      return false;
     return false;
+  }
 
   char sql[256];
   snprintf(sql, sizeof sql,
@@ -173,54 +213,81 @@ bool msglimit_enforce(struct discord *client,
            "DO UPDATE SET %s = %s + 1",
            col, col, col);
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-    return false;
+    goto rollback;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
   sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
   int count_rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
+  stmt = NULL;
   if (count_rc != SQLITE_DONE)
-    return false;
+    goto rollback;
 
-  sqlite3_prepare_v2(
-      db,
-      "UPDATE msglimit_message_state SET counted = 1 WHERE message_id = ?",
-      -1, &stmt, NULL);
+  if (sqlite3_prepare_v2(
+          db,
+          "UPDATE msglimit_message_state SET counted = 1 "
+          "WHERE message_id = ? AND guild_id = ? AND user_id = ?",
+          -1, &stmt, NULL) != SQLITE_OK)
+    goto rollback;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->id);
-  sqlite3_step(stmt);
+  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->guild_id);
+  sqlite3_bind_int64(stmt, 3, (sqlite3_int64)event->author->id);
+  int state_rc = sqlite3_step(stmt);
+  int state_changed = sqlite3_changes(db);
   sqlite3_finalize(stmt);
+  stmt = NULL;
+  if (state_rc != SQLITE_DONE || state_changed != 1)
+    goto rollback;
 
   snprintf(sql, sizeof sql,
            "SELECT %s FROM msglimit_counts WHERE guild_id=? AND user_id=? "
            "AND day=?",
            col);
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-    return false;
+    goto rollback;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
   sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
-  int count = 0;
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    count = sqlite3_column_int(stmt, 0);
+  int count_rc2 = sqlite3_step(stmt);
+  sqlite3_int64 count =
+      count_rc2 == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : -1;
   sqlite3_finalize(stmt);
+  stmt = NULL;
+  if (count_rc2 != SQLITE_ROW)
+    goto rollback;
+
+  if (!msglimit_commit(db))
+    return false;
 
   if (count > limit) {
-    discord_delete_message(client, event->channel_id, event->id, NULL, NULL);
+    CCORDcode delete_status =
+        discord_delete_message(client, event->channel_id, event->id, NULL, NULL);
+    if (delete_status != CCORD_PENDING && delete_status != CCORD_OK)
+      log_error("msglimit: failed to queue deletion for message %" PRIu64
+                " (code %d)", event->id, delete_status);
     return true;
   }
   return false;
-}
 
+rollback:
+  if (stmt)
+    sqlite3_finalize(stmt);
+  msglimit_rollback(db);
+  return false;
+}
 bool message_is_forwarded(const struct discord_message *event) {
   return event->message_reference && event->message_reference->type == 1;
 }
 
 static bool apply_edit_check(struct discord *client,
                               const struct discord_message *event) {
-  if (!event || !event->guild_id || !event->author || event->author->bot)
+  if (!event || !event->guild_id || !event->author || event->author->bot ||
+      !event->id)
     return false;
 
   sqlite3 *db = customcom_get_db();
+  if (!db || !msglimit_begin(db))
+    return false;
   sqlite3_stmt *stmt = NULL;
   char day[16] = "";
   int was_media = 0, was_counted = 0;
@@ -230,42 +297,61 @@ static bool apply_edit_check(struct discord *client,
           "SELECT day, is_media, counted FROM msglimit_message_state "
           "WHERE message_id = ? AND guild_id = ? AND user_id = ?",
           -1, &stmt, NULL) != SQLITE_OK)
-    return false;
+    goto edit_rollback;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 3, (sqlite3_int64)event->author->id);
-  if (sqlite3_step(stmt) != SQLITE_ROW) {
+  int state_rc = sqlite3_step(stmt);
+  if (state_rc != SQLITE_ROW) {
     sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (state_rc != SQLITE_DONE)
+      goto edit_rollback;
+    if (!msglimit_commit(db))
+      return false;
     return false; /* Do not retroactively recount messages predating this ledger. */
   }
-  snprintf(day, sizeof day, "%s",
-           (const char *)sqlite3_column_text(stmt, 0));
+  const unsigned char *stored_day = sqlite3_column_text(stmt, 0);
+  if (!stored_day || strlen((const char *)stored_day) >= sizeof day) {
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+    goto edit_rollback;
+  }
+  snprintf(day, sizeof day, "%s", (const char *)stored_day);
   was_media = sqlite3_column_int(stmt, 1);
   was_counted = sqlite3_column_int(stmt, 2);
   sqlite3_finalize(stmt);
+  stmt = NULL;
 
   bool is_media = message_is_media(event);
-  if (was_media == (is_media ? 1 : 0))
+  if (was_media == (is_media ? 1 : 0)) {
+    if (!msglimit_commit(db))
+      return false;
     return false;
+  }
 
-  int text_limit = 0, media_limit = 0;
+  sqlite3_int64 text_limit = 0, media_limit = 0;
   if (sqlite3_prepare_v2(
           db,
           "SELECT text_limit, media_limit FROM msglimit_settings "
           "WHERE guild_id = ? AND user_id = ?",
           -1, &stmt, NULL) != SQLITE_OK)
-    return false;
+    goto edit_rollback;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    text_limit = sqlite3_column_int(stmt, 0);
-    media_limit = sqlite3_column_int(stmt, 1);
+  int settings_rc = sqlite3_step(stmt);
+  if (settings_rc == SQLITE_ROW) {
+    text_limit = sqlite3_column_int64(stmt, 0);
+    media_limit = sqlite3_column_int64(stmt, 1);
   }
   sqlite3_finalize(stmt);
+  stmt = NULL;
+  if (settings_rc != SQLITE_ROW && settings_rc != SQLITE_DONE)
+    goto edit_rollback;
 
   const char *old_col = was_media ? "media_count" : "text_count";
   const char *new_col = is_media ? "media_count" : "text_count";
-  int new_limit = is_media ? media_limit : text_limit;
+  sqlite3_int64 new_limit = is_media ? media_limit : text_limit;
   char sql[256];
 
   if (was_counted) {
@@ -274,12 +360,16 @@ static bool apply_edit_check(struct discord *client,
              "ELSE 0 END WHERE guild_id = ? AND user_id = ? AND day = ?",
              old_col, old_col, old_col);
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-      return false;
+      goto edit_rollback;
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
     sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
+    int decrement_rc = sqlite3_step(stmt);
+    int decremented = sqlite3_changes(db);
     sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (decrement_rc != SQLITE_DONE || decremented != 1)
+      goto edit_rollback;
   }
 
   bool now_counted = new_limit > 0;
@@ -290,52 +380,77 @@ static bool apply_edit_check(struct discord *client,
              "DO UPDATE SET %s = %s + 1",
              new_col, new_col, new_col);
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-      return false;
+      goto edit_rollback;
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
     sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
-    int rc = sqlite3_step(stmt);
+    int increment_rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE)
-      return false;
+    stmt = NULL;
+    if (increment_rc != SQLITE_DONE)
+      goto edit_rollback;
   }
 
   if (sqlite3_prepare_v2(
           db,
           "UPDATE msglimit_message_state SET is_media = ?, counted = ? "
-          "WHERE message_id = ?",
+          "WHERE message_id = ? AND guild_id = ? AND user_id = ?",
           -1, &stmt, NULL) != SQLITE_OK)
-    return false;
+    goto edit_rollback;
   sqlite3_bind_int(stmt, 1, is_media ? 1 : 0);
   sqlite3_bind_int(stmt, 2, now_counted ? 1 : 0);
   sqlite3_bind_int64(stmt, 3, (sqlite3_int64)event->id);
-  sqlite3_step(stmt);
+  sqlite3_bind_int64(stmt, 4, (sqlite3_int64)event->guild_id);
+  sqlite3_bind_int64(stmt, 5, (sqlite3_int64)event->author->id);
+  int update_rc = sqlite3_step(stmt);
+  int updated = sqlite3_changes(db);
   sqlite3_finalize(stmt);
+  stmt = NULL;
+  if (update_rc != SQLITE_DONE || updated != 1)
+    goto edit_rollback;
 
-  if (!now_counted)
+  if (!now_counted) {
+    if (!msglimit_commit(db))
+      return false;
     return false;
+  }
 
   snprintf(sql, sizeof sql,
            "SELECT %s FROM msglimit_counts WHERE guild_id=? AND user_id=? "
            "AND day=?",
            new_col);
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-    return false;
+    goto edit_rollback;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
   sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
-  int count = 0;
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    count = sqlite3_column_int(stmt, 0);
+  int count_rc = sqlite3_step(stmt);
+  sqlite3_int64 count =
+      count_rc == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : -1;
   sqlite3_finalize(stmt);
+  stmt = NULL;
+  if (count_rc != SQLITE_ROW)
+    goto edit_rollback;
+
+  if (!msglimit_commit(db))
+    return false;
 
   if (count > new_limit) {
-    discord_delete_message(client, event->channel_id, event->id, NULL, NULL);
+    CCORDcode delete_status =
+        discord_delete_message(client, event->channel_id, event->id, NULL, NULL);
+    if (delete_status != CCORD_PENDING && delete_status != CCORD_OK)
+      log_error("msglimit: failed to queue deletion for edited message %" PRIu64
+                " (code %d)", event->id, delete_status);
     return true;
   }
   return false;
-}
 
+edit_rollback:
+  if (stmt)
+    sqlite3_finalize(stmt);
+  msglimit_rollback(db);
+  return false;
+}
 void msglimit_enforce_edit(struct discord *client,
                            const struct discord_message *event) {
   apply_edit_check(client, event);
