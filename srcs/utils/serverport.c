@@ -14,11 +14,29 @@
 
 void rolesync_db_init(void) {
   sqlite3 *db = customcom_get_db();
-  sqlite3_exec(db,
-               "CREATE TABLE IF NOT EXISTS role_sync_map ("
-               "guild_a_role_id INTEGER PRIMARY KEY, guild_b_role_id INTEGER "
-               "NOT NULL, label TEXT);",
-               NULL, NULL, NULL);
+  if (!db || sqlite3_exec(
+                 db,
+                 "CREATE TABLE IF NOT EXISTS role_sync_map ("
+                 "guild_a_role_id INTEGER PRIMARY KEY, guild_b_role_id INTEGER "
+                 "NOT NULL, label TEXT);",
+                 NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("rolesync: failed to initialize role mapping storage");
+  }
+}
+
+static bool rolesync_append(char **buffer, size_t *length, const char *text) {
+  if (!buffer || !*buffer || !length || !text)
+    return false;
+  size_t add = strlen(text);
+  if (add > (size_t)-1 - *length - 1)
+    return false;
+  char *next = realloc(*buffer, *length + add + 1);
+  if (!next)
+    return false;
+  memcpy(next + *length, text, add + 1);
+  *buffer = next;
+  *length += add;
+  return true;
 }
 static void rolesync_send_chunked(struct discord *client,
                                   u64snowflake channel_id, const char *text) {
@@ -39,14 +57,12 @@ static void rolesync_send_chunked(struct discord *client,
       }
     }
 
-    char *block = malloc(cut + 1);
+    char block[1901];
     memcpy(block, text + pos, cut);
     block[cut] = '\0';
 
     struct discord_create_message params = {.content = block};
     discord_create_message(client, channel_id, &params, NULL);
-
-    free(block);
     pos += cut;
   }
 }
@@ -157,13 +173,25 @@ static void rolesync_unmap(struct discord *client,
   }
 
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(db, "DELETE FROM role_sync_map WHERE guild_a_role_id = ?",
-                     -1, &stmt, NULL);
+  sqlite3_stmt *stmt = NULL;
+  if (!db || sqlite3_prepare_v2(
+                 db, "DELETE FROM role_sync_map WHERE guild_a_role_id = ?",
+                 -1, &stmt, NULL) != SQLITE_OK) {
+    struct discord_create_message reply = {
+        .content = "Database error: mapping was not removed."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)a_id);
-  sqlite3_step(stmt);
+  int rc = sqlite3_step(stmt);
   int changed = sqlite3_changes(db);
   sqlite3_finalize(stmt);
+  if (rc != SQLITE_DONE) {
+    struct discord_create_message reply = {
+        .content = "Database error: mapping was not removed."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
   struct discord_create_message reply = {
       .content =
@@ -176,40 +204,57 @@ static void rolesync_list(struct discord *client,
                           const char *args) {
   (void)args;
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(db,
-                     "SELECT guild_a_role_id, guild_b_role_id, label FROM "
-                     "role_sync_map ORDER BY rowid",
-                     -1, &stmt, NULL);
+  sqlite3_stmt *stmt = NULL;
+  if (!db || sqlite3_prepare_v2(
+                 db,
+                 "SELECT guild_a_role_id, guild_b_role_id, label FROM "
+                 "role_sync_map ORDER BY rowid",
+                 -1, &stmt, NULL) != SQLITE_OK) {
+    log_error("rolesync: failed to read role mappings");
+    struct discord_create_message reply = {
+        .content = "Database error: mappings could not be read."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
-  char *out = malloc(1);
-  out[0] = '\0';
+  char *out = calloc(1, 1);
   size_t out_len = 0;
+  if (!out || !rolesync_append(&out, &out_len, "role sync mappings:\n")) {
+    free(out);
+    sqlite3_finalize(stmt);
+    log_error("rolesync: out of memory building mapping list");
+    return;
+  }
+
   int found = 0;
-
-  const char *header = "role sync mappings:\n";
-  out = realloc(out, out_len + strlen(header) + 1);
-  strcpy(out + out_len, header);
-  out_len += strlen(header);
-
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    char line[128];
+  int step_rc;
+  while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    char line[160];
     u64snowflake a = (u64snowflake)sqlite3_column_int64(stmt, 0);
     u64snowflake b = (u64snowflake)sqlite3_column_int64(stmt, 1);
-    const char *label = (const char *)sqlite3_column_text(stmt, 2);
-    int n = snprintf(line, sizeof line, "%" PRIu64 " -> %" PRIu64 "%s%s\n", a,
-                     b, label ? " : " : "", label ? label : "");
-
-    out = realloc(out, out_len + n + 1);
-    memcpy(out + out_len, line, n + 1);
-    out_len += n;
+    const unsigned char *label = sqlite3_column_text(stmt, 2);
+    int n = snprintf(line, sizeof line, "%" PRIu64 " -> %" PRIu64 "%s%s\n",
+                     a, b, label ? " : " : "",
+                     label ? (const char *)label : "");
+    if (n < 0 || (size_t)n >= sizeof line ||
+        !rolesync_append(&out, &out_len, line)) {
+      free(out);
+      sqlite3_finalize(stmt);
+      log_error("rolesync: out of memory building mapping list");
+      return;
+    }
     found = 1;
   }
   sqlite3_finalize(stmt);
+  if (step_rc != SQLITE_DONE) {
+    free(out);
+    log_error("rolesync: database error while reading mappings");
+    return;
+  }
 
   if (!found) {
-    struct discord_create_message reply = {.content =
-                                               "no role mappings configured"};
+    struct discord_create_message reply = {
+        .content = "no role mappings configured"};
     discord_create_message(client, event->channel_id, &reply, NULL);
   } else {
     rolesync_send_chunked(client, event->channel_id, out);
@@ -417,25 +462,34 @@ static void rolesync_generate(struct discord *client,
   }
 
   sqlite3 *db = customcom_get_db();
-  char *matched = malloc(1);
-  matched[0] = '\0';
-  size_t matched_len = 0;
-  char *unmatched = malloc(1);
-  unmatched[0] = '\0';
-  size_t unmatched_len = 0;
-  bool any_matched = false, any_unmatched = false;
+  if (!db) {
+    log_error("rolesync: database unavailable during mapping generation");
+    return;
+  }
 
+  char *matched = calloc(1, 1);
+  char *unmatched = calloc(1, 1);
+  size_t matched_len = 0, unmatched_len = 0;
+  if (!matched || !unmatched) {
+    free(matched);
+    free(unmatched);
+    log_error("rolesync: out of memory initializing generation report");
+    return;
+  }
+
+  bool any_matched = false, any_unmatched = false;
   for (int i = 0; i < roles_a.size; i++) {
     u64snowflake a_id = roles_a.array[i].id;
     const char *a_name = roles_a.array[i].name;
-
-    if (a_id == GUILD_A_ID)
+    if (a_id == GUILD_A_ID || !a_name)
       continue;
 
     u64snowflake b_id = 0;
     bool found = false;
     for (int j = 0; j < roles_b.size; j++) {
-      if (strcmp(roles_b.array[j].name, a_name) == 0 &&
+      const char *b_name = roles_b.array[j].name;
+      if (b_name && strcmp(b_name, a_name) == 0 &&
+          roles_b.array[j].id != GUILD_B_ID &&
           !(roles_b.array[j].permissions & DISCORD_PERM_ADMINISTRATOR)) {
         b_id = roles_b.array[j].id;
         found = true;
@@ -443,39 +497,67 @@ static void rolesync_generate(struct discord *client,
       }
     }
 
+    bool saved = false;
     if (found) {
-      sqlite3_stmt *stmt;
-      sqlite3_prepare_v2(
-          db,
-          "INSERT OR IGNORE INTO role_sync_map (guild_a_role_id, "
-          "guild_b_role_id, label) VALUES (?, ?, ?)",
-          -1, &stmt, NULL);
-      sqlite3_bind_int64(stmt, 1, (sqlite3_int64)a_id);
-      sqlite3_bind_int64(stmt, 2, (sqlite3_int64)b_id);
-      sqlite3_bind_text(stmt, 3, a_name, -1, SQLITE_STATIC);
-      sqlite3_step(stmt);
-      sqlite3_finalize(stmt);
+      sqlite3_stmt *stmt = NULL;
+      if (sqlite3_prepare_v2(
+              db,
+              "INSERT OR IGNORE INTO role_sync_map (guild_a_role_id, "
+              "guild_b_role_id, label) VALUES (?, ?, ?)",
+              -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, (sqlite3_int64)a_id);
+        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)b_id);
+        sqlite3_bind_text(stmt, 3, a_name, -1, SQLITE_TRANSIENT);
+        saved = sqlite3_step(stmt) == SQLITE_DONE;
+        sqlite3_finalize(stmt);
+      }
+    }
 
-      char line[128];
-      int n = snprintf(line, sizeof line, "%s\n", a_name);
-      matched = realloc(matched, matched_len + n + 1);
-      memcpy(matched + matched_len, line, n + 1);
-      matched_len += n;
+    char line[160];
+    int n = snprintf(line, sizeof line, "%s\n", a_name);
+    if (n < 0 || (size_t)n >= sizeof line) {
+      free(matched);
+      free(unmatched);
+      log_error("rolesync: role name exceeded report buffer");
+      return;
+    }
+
+    if (found && saved) {
+      if (!rolesync_append(&matched, &matched_len, line)) {
+        free(matched);
+        free(unmatched);
+        log_error("rolesync: out of memory building matched report");
+        return;
+      }
       any_matched = true;
     } else {
-      char line[128];
-      int n = snprintf(line, sizeof line, "%s\n", a_name);
-      unmatched = realloc(unmatched, unmatched_len + n + 1);
-      memcpy(unmatched + unmatched_len, line, n + 1);
-      unmatched_len += n;
+      if (!rolesync_append(&unmatched, &unmatched_len, line)) {
+        free(matched);
+        free(unmatched);
+        log_error("rolesync: out of memory building unmatched report");
+        return;
+      }
       any_unmatched = true;
     }
   }
 
-  char *report = malloc(matched_len + unmatched_len + 64);
-  sprintf(report, "**synced:**\n%s\n**no match found:**\n%s",
-          any_matched ? matched : "none\n",
-          any_unmatched ? unmatched : "none\n");
+  size_t report_cap = matched_len + unmatched_len + 64;
+  if (report_cap < matched_len || report_cap < unmatched_len) {
+    free(matched);
+    free(unmatched);
+    log_error("rolesync: report size overflow");
+    return;
+  }
+  char *report = malloc(report_cap);
+  if (!report) {
+    free(matched);
+    free(unmatched);
+    log_error("rolesync: out of memory finalizing generation report");
+    return;
+  }
+  snprintf(report, report_cap, "**synced:**\n%s\n**no match found:**\n%s",
+           any_matched ? matched : "none\n",
+           any_unmatched ? unmatched : "none\n");
 
   rolesync_send_chunked(client, event->channel_id, report);
 
