@@ -204,9 +204,9 @@ static bool parse_nonnegative_int(const char *text, int *out) {
 static bool only_space_remains(const char *text) {
   if (!text)
     return false;
-  while (*text == ' ' || *text == '\${ch}' || *text == '\${ch}' || *text == '\${ch}')
+  while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n')
     ++text;
-  return *text == '\${ch}';
+  return *text == '\0';
 }
 
 void cc_cooldown(struct discord *client, const struct discord_message *event,
