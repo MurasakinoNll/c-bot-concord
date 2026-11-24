@@ -162,13 +162,14 @@ static void send_urban_page(struct discord *client, u64snowflake channel_id, u64
   int thumbs_up = cJSON_IsNumber(up_item) ? up_item->valueint : 0;
   int thumbs_down = cJSON_IsNumber(down_item) ? down_item->valueint : 0;
 
-  char desc[3000], footer[64];
+  char title[257], desc[3000], footer[64];
+  snprintf(title, sizeof title, "%.256s", word);
   snprintf(desc, sizeof desc, "%.1800s\n\n**Example:**\n%.900s", definition, example);
   snprintf(footer, sizeof footer, "%d/%d \xE2\x80\xA2 \xF0\x9F\x91\x8D%d \xF0\x9F\x91\x8E%d \xE2\x80\xA2 by %.20s",
            page + 1, count, thumbs_up, thumbs_down, author);
 
   struct discord_embed embed = {
-    .title = (char*)word, .description = desc, .color = 0x1D2439,
+    .title = title, .description = desc, .color = 0x1D2439,
     .footer = &(struct discord_embed_footer){ .text = footer },
   };
 
