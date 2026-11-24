@@ -52,31 +52,82 @@ static bool ticket_close_channel(struct discord *client,
                                  u64snowflake report_channel_id,
                                  sweep_state *sweep);
 
+static bool ticket_column_exists(sqlite3 *db, const char *name,
+                                  bool *exists) {
+  if (!db || !name || !exists)
+    return false;
+  *exists = false;
+
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(db, "PRAGMA table_info(tickets)", -1, &stmt, NULL) !=
+      SQLITE_OK)
+    return false;
+
+  int rc;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    const unsigned char *column = sqlite3_column_text(stmt, 1);
+    if (column && strcmp((const char *)column, name) == 0)
+      *exists = true;
+  }
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE;
+}
+
 void ticket_db_init(void) {
   sqlite3 *db = customcom_get_db();
-  sqlite3_exec(db,
-               "CREATE TABLE IF NOT EXISTS tickets ("
-               "channel_id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, "
-               "ticket_num INTEGER, status TEXT DEFAULT 'open');",
-               NULL, NULL, NULL);
-  sqlite3_exec(db, "ALTER TABLE tickets ADD COLUMN owner_username TEXT;", NULL,
-               NULL, NULL);
-  sqlite3_exec(
-      db,
-      "CREATE TRIGGER IF NOT EXISTS tickets_one_open_per_owner_insert "
-      "BEFORE INSERT ON tickets WHEN NEW.status = 'open' AND EXISTS ("
-      "SELECT 1 FROM tickets WHERE owner_id = NEW.owner_id AND status = 'open') "
-      "BEGIN SELECT RAISE(ABORT, 'owner already has an open ticket'); END;",
-      NULL, NULL, NULL);
-  sqlite3_exec(
-      db,
-      "CREATE TRIGGER IF NOT EXISTS tickets_one_open_per_owner_update "
-      "BEFORE UPDATE OF owner_id, status ON tickets "
-      "WHEN NEW.status = 'open' AND EXISTS ("
-      "SELECT 1 FROM tickets WHERE owner_id = NEW.owner_id AND status = 'open' "
-      "AND channel_id <> OLD.channel_id) "
-      "BEGIN SELECT RAISE(ABORT, 'owner already has an open ticket'); END;",
-      NULL, NULL, NULL);
+  if (!db) {
+    log_error("ticket: database is unavailable; ticket subsystem disabled");
+    return;
+  }
+
+  if (sqlite3_exec(
+          db,
+          "CREATE TABLE IF NOT EXISTS tickets ("
+          "channel_id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, "
+          "ticket_num INTEGER, status TEXT DEFAULT 'open');",
+          NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to create ticket table: %s", sqlite3_errmsg(db));
+    return;
+  }
+
+  bool has_owner_username = false;
+  if (!ticket_column_exists(db, "owner_username", &has_owner_username)) {
+    log_error("ticket: failed to inspect ticket schema: %s", sqlite3_errmsg(db));
+    return;
+  }
+  if (!has_owner_username &&
+      sqlite3_exec(db, "ALTER TABLE tickets ADD COLUMN owner_username TEXT;",
+                   NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to migrate owner_username column: %s",
+              sqlite3_errmsg(db));
+    return;
+  }
+
+  if (sqlite3_exec(
+          db,
+          "CREATE TRIGGER IF NOT EXISTS tickets_one_open_per_owner_insert "
+          "BEFORE INSERT ON tickets WHEN NEW.status = 'open' AND EXISTS ("
+          "SELECT 1 FROM tickets WHERE owner_id = NEW.owner_id AND status = 'open') "
+          "BEGIN SELECT RAISE(ABORT, 'owner already has an open ticket'); END;",
+          NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to create insert uniqueness trigger: %s",
+              sqlite3_errmsg(db));
+    return;
+  }
+
+  if (sqlite3_exec(
+          db,
+          "CREATE TRIGGER IF NOT EXISTS tickets_one_open_per_owner_update "
+          "BEFORE UPDATE OF owner_id, status ON tickets "
+          "WHEN NEW.status = 'open' AND EXISTS ("
+          "SELECT 1 FROM tickets WHERE owner_id = NEW.owner_id AND status = 'open' "
+          "AND channel_id <> OLD.channel_id) "
+          "BEGIN SELECT RAISE(ABORT, 'owner already has an open ticket'); END;",
+          NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to create update uniqueness trigger: %s",
+              sqlite3_errmsg(db));
+    return;
+  }
 }
 
 static bool ticket_find_open(u64snowflake owner_id, u64snowflake *found) {
