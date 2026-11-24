@@ -45,26 +45,58 @@ void cc_dispatch(struct discord *client, const struct discord_message *event) {
 }
 
 void customcom_init(void) {
-  sqlite3_open("customcoms.db", &db);
-  sqlite3_exec(db,
-               "CREATE TABLE IF NOT EXISTS customcoms ("
-               "name TEXT PRIMARY KEY, response TEXT NOT NULL, "
-               "cooldown INTEGER DEFAULT 0, created_by TEXT, uses INTEGER DEFAULT 0);",
-               NULL, NULL, NULL);
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(db, "SELECT name, response, cooldown FROM customcoms", -1, &stmt, NULL);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    cc_cache_insert((const char*)sqlite3_column_text(stmt, 0),
-                    (const char*)sqlite3_column_text(stmt, 1),
-                  sqlite3_column_int(stmt, 2));
-}
-sqlite3_finalize(stmt);
-sqlite3_exec(db,
-             "CREATE TABLE IF NOT EXISTS customcom_cooldowns ("
-             "user_id INTEGER NOT NULL, command_name TEXT NOT NULL, "
-             "last_used INTEGER NOT NULL, "
-             "PRIMARY KEY(user_id, command_name));",
-             NULL, NULL, NULL);
+  int rc = sqlite3_open("customcoms.db", &db);
+  if (rc != SQLITE_OK) {
+    log_error("customcom: database open failed: %s",
+              db ? sqlite3_errmsg(db) : "no database handle");
+    if (db)
+      sqlite3_close(db);
+    db = NULL;
+    return;
+  }
+
+  if (sqlite3_exec(
+          db,
+          "CREATE TABLE IF NOT EXISTS customcoms ("
+          "name TEXT PRIMARY KEY, response TEXT NOT NULL, "
+          "cooldown INTEGER DEFAULT 0, created_by TEXT, uses INTEGER DEFAULT 0);",
+          NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("customcom: failed to initialize command table: %s",
+              sqlite3_errmsg(db));
+    return;
+  }
+
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(
+          db, "SELECT name, response, cooldown FROM customcoms", -1, &stmt,
+          NULL) != SQLITE_OK) {
+    log_error("customcom: failed to load command cache: %s", sqlite3_errmsg(db));
+    return;
+  }
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    const unsigned char *name = sqlite3_column_text(stmt, 0);
+    const unsigned char *response = sqlite3_column_text(stmt, 1);
+    if (name && response)
+      cc_cache_insert((const char *)name, (const char *)response,
+                      sqlite3_column_int(stmt, 2));
+  }
+  sqlite3_finalize(stmt);
+  if (rc != SQLITE_DONE) {
+    log_error("customcom: failed while loading command cache: %s",
+              sqlite3_errmsg(db));
+    return;
+  }
+
+  if (sqlite3_exec(
+          db,
+          "CREATE TABLE IF NOT EXISTS customcom_cooldowns ("
+          "user_id INTEGER NOT NULL, command_name TEXT NOT NULL, "
+          "last_used INTEGER NOT NULL, "
+          "PRIMARY KEY(user_id, command_name));",
+          NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("customcom: failed to initialize cooldown table: %s",
+              sqlite3_errmsg(db));
+  }
 }
 
 void cc_create(struct discord *client, const struct discord_message *event, const char *args) {
@@ -231,6 +263,8 @@ static cc_node *cc_lookup(const char *name) {
 }
 
 static void cc_cache_insert(const char *name, const char *response, int cooldown) {
+  if (!name || !response)
+    return;
   cc_node *existing = cc_lookup(name);
   if (existing) {
     strncpy(existing->response, response, sizeof(existing->response) - 1);
@@ -238,6 +272,10 @@ static void cc_cache_insert(const char *name, const char *response, int cooldown
     return;
   }
   cc_node *n = calloc(1, sizeof *n);
+  if (!n) {
+    fprintf(stderr, "cc: unable to allocate custom-command cache entry\\n");
+    return;
+  }
   strncpy(n->name, name, sizeof(n->name) - 1);
   strncpy(n->response, response, sizeof(n->response) - 1);
   n->cooldown = cooldown;
