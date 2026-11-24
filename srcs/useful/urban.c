@@ -3,15 +3,22 @@
 #include <ctype.h>
 #include <curl/curl.h>
 #include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct growbuf { char *data; size_t size; };
 
+#define URBAN_RESPONSE_MAX (64U * 1024U)
+
 static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
   struct growbuf *g = userdata;
+  if (size && nmemb > SIZE_MAX / size)
+    return 0;
   size_t total = size * nmemb;
+  if (total > URBAN_RESPONSE_MAX - g->size)
+    return 0;
   char *tmp = realloc(g->data, g->size + total + 1);
   if (!tmp) return 0;
   g->data = tmp;
@@ -49,12 +56,17 @@ static cJSON *fetch_definitions(const char *term) {
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &g);
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "cfbot/1.0");
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
   CURLcode res = curl_easy_perform(curl);
+  long http_status = 0;
+  if (res == CURLE_OK)
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
   curl_easy_cleanup(curl);
 
-  if (res != CURLE_OK || !g.data) {
+  if (res != CURLE_OK || http_status < 200 || http_status >= 300 || !g.data) {
     free(g.data);
     return NULL;
   }
@@ -86,8 +98,8 @@ static void send_urban_page(struct discord *client, u64snowflake channel_id, u64
                              const char *term, int page, bool is_edit,
                              u64snowflake interaction_id, const char *interaction_token) {
   cJSON *root = fetch_definitions(term);
-  cJSON *list = root ? cJSON_GetObjectItem(root, "list") : NULL;
-  int count = list ? cJSON_GetArraySize(list) : 0;
+  cJSON *list = root ? cJSON_GetObjectItemCaseSensitive(root, "list") : NULL;
+  int count = cJSON_IsArray(list) ? cJSON_GetArraySize(list) : 0;
 
   if (count == 0) {
     struct discord_create_message reply = { .content = "No definitions found." };
@@ -108,12 +120,43 @@ static void send_urban_page(struct discord *client, u64snowflake channel_id, u64
   if (page >= count) page = count - 1;
 
   cJSON *entry = cJSON_GetArrayItem(list, page);
-  const char *word       = cJSON_GetObjectItem(entry, "word")->valuestring;
-  const char *definition = cJSON_GetObjectItem(entry, "definition")->valuestring;
-  const char *example    = cJSON_GetObjectItem(entry, "example")->valuestring;
-  const char *author     = cJSON_GetObjectItem(entry, "author")->valuestring;
-  int thumbs_up   = cJSON_GetObjectItem(entry, "thumbs_up")->valueint;
-  int thumbs_down = cJSON_GetObjectItem(entry, "thumbs_down")->valueint;
+  cJSON *word_item = cJSON_GetObjectItemCaseSensitive(entry, "word");
+  cJSON *definition_item =
+      cJSON_GetObjectItemCaseSensitive(entry, "definition");
+  cJSON *example_item = cJSON_GetObjectItemCaseSensitive(entry, "example");
+  cJSON *author_item = cJSON_GetObjectItemCaseSensitive(entry, "author");
+  cJSON *up_item = cJSON_GetObjectItemCaseSensitive(entry, "thumbs_up");
+  cJSON *down_item = cJSON_GetObjectItemCaseSensitive(entry, "thumbs_down");
+
+  if (!cJSON_IsObject(entry) || !cJSON_IsString(word_item) ||
+      !cJSON_IsString(definition_item) || !cJSON_IsString(example_item) ||
+      !cJSON_IsString(author_item) || !word_item->valuestring ||
+      !definition_item->valuestring || !example_item->valuestring ||
+      !author_item->valuestring) {
+    struct discord_create_message reply = {
+        .content = "The upstream service returned an invalid definition."};
+    if (is_edit) {
+      struct discord_interaction_response resp = {
+          .type = DISCORD_INTERACTION_UPDATE_MESSAGE,
+          .data = &(struct discord_interaction_callback_data){
+              .content = "The upstream service returned an invalid definition.",
+              .embeds = NULL,
+              .components = NULL}};
+      discord_create_interaction_response(client, interaction_id,
+                                          interaction_token, &resp, NULL);
+    } else {
+      discord_create_message(client, channel_id, &reply, NULL);
+    }
+    cJSON_Delete(root);
+    return;
+  }
+
+  const char *word = word_item->valuestring;
+  const char *definition = definition_item->valuestring;
+  const char *example = example_item->valuestring;
+  const char *author = author_item->valuestring;
+  int thumbs_up = cJSON_IsNumber(up_item) ? up_item->valueint : 0;
+  int thumbs_down = cJSON_IsNumber(down_item) ? down_item->valueint : 0;
 
   char desc[3000], footer[64];
   snprintf(desc, sizeof desc, "%.1800s\n\n**Example:**\n%.900s", definition, example);
@@ -153,7 +196,7 @@ static void send_urban_page(struct discord *client, u64snowflake channel_id, u64
 }
 
 void urban_command(struct discord *client, const struct discord_message *event) {
-  if (event->author->bot) return;
+  if (!event || !event->author || event->author->bot) return;
   if (event->author->id == 1255503080842330264) return;
 
   char term[128] = "";
@@ -168,7 +211,7 @@ void urban_command(struct discord *client, const struct discord_message *event) 
 }
 
 void urban_handle_interaction(struct discord *client, const struct discord_interaction *event) {
-  if (!event->data || !event->data->custom_id) return;
+  if (!event || !event->data || !event->data->custom_id) return;
   if (strncmp(event->data->custom_id, "urbanpg:", 8) != 0) return;
 
   char action[4] = "", term[128] = "";
