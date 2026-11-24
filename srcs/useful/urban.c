@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <curl/curl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,7 +43,7 @@ static void urlencode(const char *in, char *out, size_t out_sz) {
 }
 
 static cJSON *fetch_definitions(const char *term) {
-  char encoded[256];
+  char encoded[512];
   urlencode(term, encoded, sizeof encoded);
 
   char url[512];
@@ -56,8 +57,11 @@ static cJSON *fetch_definitions(const char *term) {
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &g);
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "cfbot/1.0");
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
+  /* Keep button interactions within Discord's 3-second initial-response
+   * deadline until the exact Concord dependency supports a verified defer/edit
+   * flow. This is a bounded mitigation, not a substitute for deferral. */
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 700L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 1800L);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
   CURLcode res = curl_easy_perform(curl);
@@ -195,55 +199,101 @@ static void send_urban_page(struct discord *client, u64snowflake channel_id, u64
   cJSON_Delete(root);
 }
 
+static bool parse_custom_id_number(const char **cursor, uint64_t *value) {
+  if (!cursor || !*cursor || !value || **cursor < '0' || **cursor > '9')
+    return false;
+  uint64_t parsed = 0;
+  const char *p = *cursor;
+  do {
+    unsigned digit = (unsigned)(*p - '0');
+    if (parsed > (UINT64_MAX - digit) / 10U)
+      return false;
+    parsed = parsed * 10U + digit;
+    ++p;
+  } while (*p >= '0' && *p <= '9');
+  *cursor = p;
+  *value = parsed;
+  return true;
+}
+
 void urban_command(struct discord *client, const struct discord_message *event) {
-  if (!event || !event->author || event->author->bot) return;
-  if (event->author->id == 1255503080842330264) return;
+  if (!event || !event->author || event->author->bot || !event->content)
+    return;
+  if (event->author->id == 1255503080842330264)
+    return;
 
   char term[128] = "";
-  sscanf(event->content, " %127[^\n]", term);
-  if (!*term) {
-    struct discord_create_message reply = { .content = "Usage: +urban <term>" };
+  if (sscanf(event->content, " %127[^\\n]", term) != 1 || !*term) {
+    struct discord_create_message reply = {.content = "Usage: +urban <term>"};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+  if (strlen(term) > 55) {
+    struct discord_create_message reply = {
+        .content = "Search terms must be 55 bytes or fewer so pagination buttons remain valid."};
     discord_create_message(client, event->channel_id, &reply, NULL);
     return;
   }
 
-  send_urban_page(client, event->channel_id, event->author->id, term, 0, false, 0, NULL);
+  send_urban_page(client, event->channel_id, event->author->id, term, 0, false,
+                  0, NULL);
 }
 
-void urban_handle_interaction(struct discord *client, const struct discord_interaction *event) {
-  if (!event || !event->data || !event->data->custom_id) return;
-  if (strncmp(event->data->custom_id, "urbanpg:", 8) != 0) return;
+void urban_handle_interaction(struct discord *client,
+                              const struct discord_interaction *event) {
+  if (!event || !event->data || !event->data->custom_id || !event->token ||
+      !event->id)
+    return;
+  const char *custom_id = event->data->custom_id;
+  if (strncmp(custom_id, "urbanpg:", 8) != 0)
+    return;
 
-  char action[4] = "", term[128] = "";
-  int page = 0;
-  u64snowflake requester_id = 0;
-  sscanf(event->data->custom_id, "urbanpg:%3[^:]:%d:%" SCNu64 ":%127[^\n]",
-         action, &page, &requester_id, term);
+  const char *p = custom_id + 8;
+  char action = *p++;
+  uint64_t page_value = 0, requester_id = 0;
+  if ((action != 'p' && action != 'n' && action != 'x') || *p++ != ':' ||
+      !parse_custom_id_number(&p, &page_value) || *p++ != ':' ||
+      !parse_custom_id_number(&p, &requester_id) || *p++ != ':' ||
+      page_value >= (uint64_t)INT_MAX || requester_id == 0 || !*p ||
+      strlen(p) > 55)
+    return;
 
-  u64snowflake clicker_id = (event->member && event->member->user) ? event->member->user->id : 0;
+  char term[56];
+  snprintf(term, sizeof term, "%s", p);
+  u64snowflake clicker_id =
+      event->member && event->member->user
+          ? event->member->user->id
+          : event->user ? event->user->id : 0;
   if (clicker_id != requester_id) {
     struct discord_interaction_response resp = {
-      .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
-      .data = &(struct discord_interaction_callback_data){
-        .content = "Only the person who ran this command can use these buttons.",
-        .flags = DISCORD_MESSAGE_EPHEMERAL,
-      },
+        .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
+        .data = &(struct discord_interaction_callback_data){
+            .content = "Only the person who ran this command can use these buttons.",
+            .flags = DISCORD_MESSAGE_EPHEMERAL,
+        },
     };
-    discord_create_interaction_response(client, event->id, event->token, &resp, NULL);
+    discord_create_interaction_response(client, event->id, event->token, &resp,
+                                        NULL);
     return;
   }
 
-  if (strcmp(action, "x") == 0) {
+  int page = (int)page_value;
+  if (action == 'x') {
     struct discord_interaction_response resp = {
-      .type = DISCORD_INTERACTION_UPDATE_MESSAGE,
-      .data = &(struct discord_interaction_callback_data){ .content = "Closed.", .embeds = NULL, .components = NULL },
+        .type = DISCORD_INTERACTION_UPDATE_MESSAGE,
+        .data = &(struct discord_interaction_callback_data){
+            .content = "Closed.", .embeds = NULL, .components = NULL},
     };
-    discord_create_interaction_response(client, event->id, event->token, &resp, NULL);
+    discord_create_interaction_response(client, event->id, event->token, &resp,
+                                        NULL);
     return;
   }
 
-  if (strcmp(action, "n") == 0) page++;
-  else if (strcmp(action, "p") == 0) page--;
+  if (action == 'n')
+    ++page;
+  else if (page > 0)
+    --page;
 
-  send_urban_page(client, event->channel_id, requester_id, term, page, true, event->id, event->token);
+  send_urban_page(client, event->channel_id, requester_id, term, page, true,
+                  event->id, event->token);
 }
