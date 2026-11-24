@@ -77,13 +77,14 @@ void ticket_db_init(void) {
 
 static u64snowflake ticket_find_open(u64snowflake owner_id) {
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = NULL;
   u64snowflake found = 0;
 
-  sqlite3_prepare_v2(
-      db,
-      "SELECT channel_id FROM tickets WHERE owner_id = ? AND status = 'open'",
-      -1, &stmt, NULL);
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT channel_id FROM tickets WHERE owner_id = ? AND status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return 0;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)owner_id);
   if (sqlite3_step(stmt) == SQLITE_ROW) {
     found = (u64snowflake)sqlite3_column_int64(stmt, 0);
@@ -95,11 +96,15 @@ static u64snowflake ticket_find_open(u64snowflake owner_id) {
 static bool ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
                           int ticket_num, const char *username) {
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(db,
-                     "INSERT INTO tickets (channel_id, owner_id, ticket_num, "
-                     "owner_username, status) VALUES (?, ?, ?, ?, 'open')",
-                     -1, &stmt, NULL);
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(
+          db,
+          "INSERT INTO tickets (channel_id, owner_id, ticket_num, "
+          "owner_username, status) VALUES (?, ?, ?, ?, 'open')",
+          -1, &stmt, NULL) != SQLITE_OK) {
+    fprintf(stderr, "ticket_insert prepare failed: %s\n", sqlite3_errmsg(db));
+    return false;
+  }
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)owner_id);
   sqlite3_bind_int(stmt, 3, ticket_num);
@@ -231,22 +236,25 @@ void channel_create(struct discord *client,
 
 static bool ticket_find_by_channel(u64snowflake channel_id, ticket_row *out) {
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = NULL;
   bool found = false;
 
   fprintf(stderr, "ticket_find_by_channel looking for channel_id=%" PRIu64 "\n",
           channel_id);
 
-  sqlite3_prepare_v2(db,
-                     "SELECT owner_id, ticket_num, owner_username FROM tickets "
-                     "WHERE channel_id = ? AND status = 'open'",
-                     -1, &stmt, NULL);
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT owner_id, ticket_num, owner_username FROM tickets "
+          "WHERE channel_id = ? AND status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
   if (sqlite3_step(stmt) == SQLITE_ROW) {
     out->owner_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
     out->ticket_num = sqlite3_column_int(stmt, 1);
-    strncpy(out->owner_username, (const char *)sqlite3_column_text(stmt, 2),
-            sizeof(out->owner_username) - 1);
+    const unsigned char *username = sqlite3_column_text(stmt, 2);
+    snprintf(out->owner_username, sizeof out->owner_username, "%s",
+             username ? (const char *)username : "unknown");
     found = true;
   }
   sqlite3_finalize(stmt);
@@ -429,8 +437,9 @@ void on_guild_member_remove_ticket_close(
     sweep_item *item = &pending[pending_count++];
     item->channel_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
     item->ticket_num = sqlite3_column_int(stmt, 1);
+    const unsigned char *username = sqlite3_column_text(stmt, 2);
     snprintf(item->owner_username, sizeof item->owner_username, "%s",
-             (const char *)sqlite3_column_text(stmt, 2));
+             username ? (const char *)username : "unknown");
   }
   sqlite3_finalize(stmt);
 
@@ -489,11 +498,15 @@ void ticketsweep_command(struct discord *client,
   }
 
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(db,
-                     "SELECT channel_id, ticket_num, owner_username FROM "
-                     "tickets WHERE status = 'open'",
-                     -1, &stmt, NULL);
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT channel_id, ticket_num, owner_username FROM "
+          "tickets WHERE status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK) {
+    log_error("ticketsweep: failed to load open tickets: %s", sqlite3_errmsg(db));
+    return;
+  }
 
   g_sweep.count = 0;
   while (g_sweep.count < SWEEP_MAX_ITEMS && sqlite3_step(stmt) == SQLITE_ROW) {
