@@ -9,48 +9,160 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+
+#define TICKET_GUILD_ID 1155152569040130101ULL
+#define TICKET_ARCHIVE_CATEGORY 1552818898947145768ULL
+
 typedef struct {
   u64snowflake owner_id;
   int ticket_num;
   char owner_username[64];
 } ticket_row;
 
-void ticket_db_init(void) {
-  sqlite3 *db = customcom_get_db();
-  sqlite3_exec(db,
-               "CREATE TABLE IF NOT EXISTS tickets ("
-               "channel_id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, "
-               "ticket_num INTEGER, status TEXT DEFAULT 'open');",
-               NULL, NULL, NULL);
-  sqlite3_exec(db, "ALTER TABLE tickets ADD COLUMN owner_username TEXT;", NULL,
-               NULL, NULL);
-}
+#define SWEEP_MAX_ITEMS 256
 
-static u64snowflake ticket_find_open(u64snowflake owner_id) {
-  sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  u64snowflake found = 0;
+typedef struct {
+  u64snowflake channel_id;
+  int ticket_num;
+  char owner_username[64];
+} sweep_item;
 
-  sqlite3_prepare_v2(
-      db,
-      "SELECT channel_id FROM tickets WHERE owner_id = ? AND status = 'open'",
-      -1, &stmt, NULL);
-  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)owner_id);
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    found = (u64snowflake)sqlite3_column_int64(stmt, 0);
+typedef struct {
+  sweep_item items[SWEEP_MAX_ITEMS];
+  int count;
+  int index;
+  int closed_count;
+  int failed_count;
+  int pending_count;
+  u64snowflake report_channel_id;
+  unsigned timer_id;
+} sweep_state;
+
+static sweep_state g_sweep = {0};
+
+typedef struct {
+  u64snowflake channel_id;
+  u64snowflake report_channel_id;
+  sweep_state *sweep;
+} ticket_close_context;
+
+static bool ticket_close_channel(struct discord *client,
+                                 u64snowflake channel_id,
+                                 const char *owner_username, int ticket_num,
+                                 u64snowflake report_channel_id,
+                                 sweep_state *sweep);
+
+static bool ticket_column_exists(sqlite3 *db, const char *name,
+                                  bool *exists) {
+  if (!db || !name || !exists)
+    return false;
+  *exists = false;
+
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(db, "PRAGMA table_info(tickets)", -1, &stmt, NULL) !=
+      SQLITE_OK)
+    return false;
+
+  int rc;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    const unsigned char *column = sqlite3_column_text(stmt, 1);
+    if (column && strcmp((const char *)column, name) == 0)
+      *exists = true;
   }
   sqlite3_finalize(stmt);
-  return found;
+  return rc == SQLITE_DONE;
 }
 
-static void ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
+void ticket_db_init(void) {
+  sqlite3 *db = customcom_get_db();
+  if (!db) {
+    log_error("ticket: database is unavailable; ticket subsystem disabled");
+    return;
+  }
+
+  if (sqlite3_exec(
+          db,
+          "CREATE TABLE IF NOT EXISTS tickets ("
+          "channel_id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, "
+          "ticket_num INTEGER, status TEXT DEFAULT 'open');",
+          NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to create ticket table: %s", sqlite3_errmsg(db));
+    return;
+  }
+
+  bool has_owner_username = false;
+  if (!ticket_column_exists(db, "owner_username", &has_owner_username)) {
+    log_error("ticket: failed to inspect ticket schema: %s", sqlite3_errmsg(db));
+    return;
+  }
+  if (!has_owner_username &&
+      sqlite3_exec(db, "ALTER TABLE tickets ADD COLUMN owner_username TEXT;",
+                   NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to migrate owner_username column: %s",
+              sqlite3_errmsg(db));
+    return;
+  }
+
+  if (sqlite3_exec(
+          db,
+          "CREATE TRIGGER IF NOT EXISTS tickets_one_open_per_owner_insert "
+          "BEFORE INSERT ON tickets WHEN NEW.status = 'open' AND EXISTS ("
+          "SELECT 1 FROM tickets WHERE owner_id = NEW.owner_id AND status = 'open') "
+          "BEGIN SELECT RAISE(ABORT, 'owner already has an open ticket'); END;",
+          NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to create insert uniqueness trigger: %s",
+              sqlite3_errmsg(db));
+    return;
+  }
+
+  if (sqlite3_exec(
+          db,
+          "CREATE TRIGGER IF NOT EXISTS tickets_one_open_per_owner_update "
+          "BEFORE UPDATE OF owner_id, status ON tickets "
+          "WHEN NEW.status = 'open' AND EXISTS ("
+          "SELECT 1 FROM tickets WHERE owner_id = NEW.owner_id AND status = 'open' "
+          "AND channel_id <> OLD.channel_id) "
+          "BEGIN SELECT RAISE(ABORT, 'owner already has an open ticket'); END;",
+          NULL, NULL, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to create update uniqueness trigger: %s",
+              sqlite3_errmsg(db));
+    return;
+  }
+}
+
+static bool ticket_find_open(u64snowflake owner_id, u64snowflake *found) {
+  if (!found)
+    return false;
+  *found = 0;
+
+  sqlite3 *db = customcom_get_db();
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT channel_id FROM tickets WHERE owner_id = ? AND status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return false;
+
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)owner_id);
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW)
+    *found = (u64snowflake)sqlite3_column_int64(stmt, 0);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_ROW || rc == SQLITE_DONE;
+}
+
+static bool ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
                           int ticket_num, const char *username) {
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(db,
-                     "INSERT INTO tickets (channel_id, owner_id, ticket_num, "
-                     "owner_username, status) VALUES (?, ?, ?, ?, 'open')",
-                     -1, &stmt, NULL);
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(
+          db,
+          "INSERT INTO tickets (channel_id, owner_id, ticket_num, "
+          "owner_username, status) VALUES (?, ?, ?, ?, 'open')",
+          -1, &stmt, NULL) != SQLITE_OK) {
+    fprintf(stderr, "ticket_insert prepare failed: %s\n", sqlite3_errmsg(db));
+    return false;
+  }
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)owner_id);
   sqlite3_bind_int(stmt, 3, ticket_num);
@@ -63,10 +175,25 @@ static void ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
     fprintf(stderr, "ticket_insert OK: channel_id=%" PRIu64 "\n", channel_id);
   }
   sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE;
 }
 
 void channel_create(struct discord *client,
                     const struct discord_interaction *event) {
+  if (!event)
+    return;
+  if (event->guild_id != TICKET_GUILD_ID) {
+    struct discord_interaction_response denied = {
+        .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
+        .data = &(struct discord_interaction_callback_data){
+            .content = "Tickets can only be created in the configured support server.",
+            .flags = DISCORD_MESSAGE_EPHEMERAL,
+        },
+    };
+    discord_create_interaction_response(client, event->id, event->token,
+                                        &denied, NULL);
+    return;
+  }
   if (!event->member || !event->member->user ||
       !event->member->user->username) {
     log_error(
@@ -76,7 +203,19 @@ void channel_create(struct discord *client,
 
   u64snowflake owner_id = event->member->user->id;
 
-  u64snowflake existing = ticket_find_open(owner_id);
+  u64snowflake existing = 0;
+  if (!ticket_find_open(owner_id, &existing)) {
+    struct discord_interaction_response failed = {
+        .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
+        .data = &(struct discord_interaction_callback_data){
+            .content = "Ticket storage is unavailable. Please try again later.",
+            .flags = DISCORD_MESSAGE_EPHEMERAL,
+        },
+    };
+    discord_create_interaction_response(client, event->id, event->token,
+                                        &failed, NULL);
+    return;
+  }
   if (existing) {
     char buf[100];
     snprintf(buf, sizeof buf, "You already have an open ticket: <#%" PRIu64 ">",
@@ -143,7 +282,26 @@ void channel_create(struct discord *client,
     return;
   }
 
-  ticket_insert(new_channel.id, owner_id, tc, event->member->user->username);
+  if (!ticket_insert(new_channel.id, owner_id, tc,
+                     event->member->user->username)) {
+    char error[160];
+    snprintf(error, sizeof error,
+             "Your ticket channel was created, but its record could not be saved. "
+             "Please contact staff and reference channel <#%llu>.",
+             (unsigned long long)new_channel.id);
+    struct discord_interaction_response failed = {
+        .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
+        .data = &(struct discord_interaction_callback_data){
+            .content = error,
+            .flags = DISCORD_MESSAGE_EPHEMERAL,
+        },
+    };
+    discord_create_interaction_response(client, event->id, event->token,
+                                        &failed, NULL);
+    log_error("ticket record insert failed; orphan channel=%" PRIu64,
+              new_channel.id);
+    return;
+  }
 
   struct discord_interaction_response resp = {
       .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
@@ -162,22 +320,25 @@ void channel_create(struct discord *client,
 
 static bool ticket_find_by_channel(u64snowflake channel_id, ticket_row *out) {
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = NULL;
   bool found = false;
 
   fprintf(stderr, "ticket_find_by_channel looking for channel_id=%" PRIu64 "\n",
           channel_id);
 
-  sqlite3_prepare_v2(db,
-                     "SELECT owner_id, ticket_num, owner_username FROM tickets "
-                     "WHERE channel_id = ? AND status = 'open'",
-                     -1, &stmt, NULL);
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT owner_id, ticket_num, owner_username FROM tickets "
+          "WHERE channel_id = ? AND status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
   if (sqlite3_step(stmt) == SQLITE_ROW) {
     out->owner_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
     out->ticket_num = sqlite3_column_int(stmt, 1);
-    strncpy(out->owner_username, (const char *)sqlite3_column_text(stmt, 2),
-            sizeof(out->owner_username) - 1);
+    const unsigned char *username = sqlite3_column_text(stmt, 2);
+    snprintf(out->owner_username, sizeof out->owner_username, "%s",
+             username ? (const char *)username : "unknown");
     found = true;
   }
   sqlite3_finalize(stmt);
@@ -186,8 +347,14 @@ static bool ticket_find_by_channel(u64snowflake channel_id, ticket_row *out) {
 }
 
 void close_ticket(struct discord *client, const struct discord_message *event) {
-  if (event->author->bot)
+  if (!event || !event->author || event->author->bot)
     return;
+  if (event->guild_id != TICKET_GUILD_ID) {
+    struct discord_create_message reply = {
+        .content = "Ticket closure is only available in the configured support server."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
   UserCtx ctx = get_ctx_from_message(event);
   u64snowflake allowlist[] = {1155152569526669391ULL};
   if (!check_perm_byrole(&ctx, allowlist, 1)) {
@@ -202,37 +369,124 @@ void close_ticket(struct discord *client, const struct discord_message *event) {
     discord_create_message(client, event->channel_id, &reply, NULL);
     return;
   }
-  close_ticket_channel(client, event->channel_id, row.owner_username,
-                       row.ticket_num);
-
-  struct discord_create_message reply = {.content =
-                                             "Ticket closed. \xE2\x9C\x85"};
-  discord_create_message(client, event->channel_id, &reply, NULL);
+  ticket_close_channel(client, event->channel_id, row.owner_username,
+                       row.ticket_num, event->channel_id, NULL);
 }
-#define TICKET_GUILD_ID 1155152569040130101ULL
-#define TICKET_ARCHIVE_CATEGORY 1552818898947145768ULL
+static bool ticket_mark_closed(u64snowflake channel_id) {
+  sqlite3 *db = customcom_get_db();
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(
+          db, "UPDATE tickets SET status = 'closed' WHERE channel_id = ? AND status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return false;
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
+  int rc = sqlite3_step(stmt);
+  int changed = sqlite3_changes(db);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE && changed > 0;
+}
 
-static void close_ticket_channel(struct discord *client,
+static void ticket_close_finish(struct discord *client,
+                                ticket_close_context *ctx,
+                                bool discord_succeeded, CCORDcode code) {
+  bool db_succeeded = false;
+  if (discord_succeeded) {
+    db_succeeded = ticket_mark_closed(ctx->channel_id);
+    if (!db_succeeded)
+      log_error("ticket: Discord archived channel %llu, but DB update failed",
+                (unsigned long long)ctx->channel_id);
+  } else {
+    log_error("ticket: Discord archive request failed for channel %llu: %d",
+              (unsigned long long)ctx->channel_id, code);
+  }
+
+  bool succeeded = discord_succeeded && db_succeeded;
+  if (ctx->sweep) {
+    if (ctx->sweep->pending_count > 0)
+      ctx->sweep->pending_count--;
+    if (succeeded)
+      ctx->sweep->closed_count++;
+    else
+      ctx->sweep->failed_count++;
+  } else if (ctx->report_channel_id) {
+    const char *content =
+        succeeded
+            ? "Ticket closed. \xE2\x9C\x85"
+            : (discord_succeeded
+                   ? "Discord archived the channel, but its ticket record could not be updated. Please contact staff."
+                   : "The ticket could not be archived. Its database state was left open.");
+    struct discord_create_message reply = {.content = (char *)content};
+    discord_create_message(client, ctx->report_channel_id, &reply, NULL);
+  }
+}
+
+static void ticket_close_done(struct discord *client,
+                              struct discord_response *resp,
+                              const struct discord_channel *channel) {
+  (void)channel;
+  ticket_close_finish(client, resp->data, true, CCORD_OK);
+}
+
+static void ticket_close_fail(struct discord *client,
+                              struct discord_response *resp) {
+  ticket_close_finish(client, resp->data, false, resp->code);
+}
+
+static void ticket_close_context_cleanup(struct discord *client, void *data) {
+  (void)client;
+  free(data);
+}
+
+/*
+ * Concord returns CCORD_PENDING for queued REST requests. The done/fail
+ * callbacks report Discord's actual HTTP outcome; CCORD_OK here would only
+ * describe local synchronous completion, not an async request's future result.
+ */
+static bool ticket_close_channel(struct discord *client,
                                  u64snowflake channel_id,
-                                 const char *owner_username, int ticket_num) {
+                                 const char *owner_username, int ticket_num,
+                                 u64snowflake report_channel_id,
+                                 sweep_state *sweep) {
+  ticket_close_context *ctx = calloc(1, sizeof *ctx);
+  if (!ctx) {
+    log_error("ticket: unable to allocate archive request context");
+    if (sweep)
+      sweep->failed_count++;
+    else if (report_channel_id) {
+      struct discord_create_message reply = {
+          .content = "The ticket could not be archived. Please try again."};
+      discord_create_message(client, report_channel_id, &reply, NULL);
+    }
+    return false;
+  }
+
+  ctx->channel_id = channel_id;
+  ctx->report_channel_id = report_channel_id;
+  ctx->sweep = sweep;
+  if (sweep)
+    sweep->pending_count++;
+
   char new_name[256];
   snprintf(new_name, sizeof new_name, "%s-%d-\xE2\x9C\x85", owner_username,
            ticket_num);
-
   struct discord_modify_channel params = {
       .name = new_name,
       .parent_id = TICKET_ARCHIVE_CATEGORY,
   };
-  discord_modify_channel(client, channel_id, &params, NULL);
+  struct discord_ret_channel ret = {
+      .data = ctx,
+      .cleanup = &ticket_close_context_cleanup,
+      .done = &ticket_close_done,
+      .fail = &ticket_close_fail,
+  };
 
-  sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(
-      db, "UPDATE tickets SET status = 'closed' WHERE channel_id = ?", -1,
-      &stmt, NULL);
-  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
+  CCORDcode status = discord_modify_channel(client, channel_id, &params, &ret);
+  if (status != CCORD_PENDING) {
+    ticket_close_finish(client, ctx, false, status);
+    free(ctx);
+    return false;
+  }
+  return true;
 }
 
 void on_guild_member_remove_ticket_close(
@@ -246,52 +500,59 @@ void on_guild_member_remove_ticket_close(
   sqlite3 *db = customcom_get_db();
   sqlite3_stmt *stmt;
 
-  sqlite3_prepare_v2(db,
-                     "SELECT channel_id, ticket_num, owner_username FROM "
-                     "tickets WHERE owner_id = ? AND status = 'open'",
-                     -1, &stmt, NULL);
+  sweep_item pending[SWEEP_MAX_ITEMS];
+  int pending_count = 0;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT channel_id, ticket_num, owner_username FROM tickets "
+          "WHERE owner_id = ? AND status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to load open tickets for departing user %"
+              PRIu64,
+              uid);
+    return;
+  }
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)uid);
 
   while (sqlite3_step(stmt) == SQLITE_ROW) {
-    u64snowflake channel_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
-    int ticket_num = sqlite3_column_int(stmt, 1);
-    char owner_username[64] = "";
-    strncpy(owner_username, (const char *)sqlite3_column_text(stmt, 2),
-            sizeof(owner_username) - 1);
-
-    close_ticket_channel(client, channel_id, owner_username, ticket_num);
-    log_info("ticket: auto-closed channel %" PRIu64 " (owner %" PRIu64
-             " left/kicked/banned)",
-             channel_id, uid);
+    if (pending_count == SWEEP_MAX_ITEMS) {
+      log_error("ticket: more than %d open tickets for user %" PRIu64
+                "; remaining channels were not queued",
+                SWEEP_MAX_ITEMS, uid);
+      break;
+    }
+    sweep_item *item = &pending[pending_count++];
+    item->channel_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
+    item->ticket_num = sqlite3_column_int(stmt, 1);
+    const unsigned char *username = sqlite3_column_text(stmt, 2);
+    snprintf(item->owner_username, sizeof item->owner_username, "%s",
+             username ? (const char *)username : "unknown");
   }
   sqlite3_finalize(stmt);
+
+  /* Submit only after closing the read cursor: REST callbacks may write SQLite. */
+  for (int i = 0; i < pending_count; i++) {
+    sweep_item *item = &pending[i];
+    if (ticket_close_channel(client, item->channel_id, item->owner_username,
+                             item->ticket_num, 0, NULL))
+      log_info("ticket: archive request queued for channel %" PRIu64
+               " after owner %" PRIu64 " left/kicked/banned",
+               item->channel_id, uid);
+  }
 }
-
-typedef struct {
-  u64snowflake channel_id;
-  int ticket_num;
-  char owner_username[64];
-} sweep_item;
-
-#define SWEEP_MAX_ITEMS 256
-
-typedef struct {
-  sweep_item items[SWEEP_MAX_ITEMS];
-  int count;
-  int index;
-  u64snowflake report_channel_id;
-  unsigned timer_id;
-} sweep_state;
-
-static sweep_state g_sweep = {0};
 
 static void sweep_tick(struct discord *client, struct discord_timer *timer) {
   sweep_state *state = (sweep_state *)timer->data;
 
+  /* Keep at most one archive request in flight during a sweep. */
+  if (state->pending_count > 0)
+    return;
+
   if (state->index >= state->count) {
     char buf[64];
-    snprintf(buf, sizeof buf, "Ticket sweep complete: %d ticket(s) closed.",
-             state->count);
+    snprintf(buf, sizeof buf,
+             "Ticket sweep complete: %d closed, %d failed.",
+             state->closed_count, state->failed_count);
     struct discord_create_message reply = {.content = buf};
     discord_create_message(client, state->report_channel_id, &reply, NULL);
     discord_timer_cancel_and_delete(client, state->timer_id);
@@ -299,16 +560,21 @@ static void sweep_tick(struct discord *client, struct discord_timer *timer) {
     return;
   }
 
-  sweep_item *item = &state->items[state->index];
-  close_ticket_channel(client, item->channel_id, item->owner_username,
-                       item->ticket_num);
-  state->index++;
+  sweep_item *item = &state->items[state->index++];
+  ticket_close_channel(client, item->channel_id, item->owner_username,
+                       item->ticket_num, 0, state);
 }
 
 void ticketsweep_command(struct discord *client,
                          const struct discord_message *event) {
-  if (event->author->bot)
+  if (!event || !event->author || event->author->bot)
     return;
+  if (event->guild_id != TICKET_GUILD_ID) {
+    struct discord_create_message reply = {
+        .content = "Ticket sweeps are only available in the configured support server."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
   UserCtx ctx = get_ctx_from_message(event);
   u64snowflake allowlist[] = {1155152569526669391ULL};
@@ -325,22 +591,42 @@ void ticketsweep_command(struct discord *client,
   }
 
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(db,
-                     "SELECT channel_id, ticket_num, owner_username FROM "
-                     "tickets WHERE status = 'open'",
-                     -1, &stmt, NULL);
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT channel_id, ticket_num, owner_username FROM "
+          "tickets WHERE status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK) {
+    log_error("ticketsweep: failed to load open tickets: %s", sqlite3_errmsg(db));
+    return;
+  }
 
   g_sweep.count = 0;
-  while (g_sweep.count < SWEEP_MAX_ITEMS && sqlite3_step(stmt) == SQLITE_ROW) {
+  bool too_many_tickets = false;
+  int step_rc = SQLITE_DONE;
+  while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    if (g_sweep.count == SWEEP_MAX_ITEMS) {
+      too_many_tickets = true;
+      break;
+    }
     sweep_item *item = &g_sweep.items[g_sweep.count];
     item->channel_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
     item->ticket_num = sqlite3_column_int(stmt, 1);
-    strncpy(item->owner_username, (const char *)sqlite3_column_text(stmt, 2),
-            sizeof(item->owner_username) - 1);
+    const unsigned char *username = sqlite3_column_text(stmt, 2);
+    snprintf(item->owner_username, sizeof item->owner_username, "%s",
+             username ? (const char *)username : "unknown");
     g_sweep.count++;
   }
   sqlite3_finalize(stmt);
+
+  if (too_many_tickets || step_rc != SQLITE_DONE) {
+    struct discord_create_message reply = {
+        .content = too_many_tickets
+                       ? "More than 256 tickets are open. No sweep was started; reduce the queue or raise the reviewed safety limit."
+                       : "Ticket records could not be read completely. No sweep was started."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
   if (g_sweep.count == 0) {
     struct discord_create_message reply = {.content =
@@ -350,9 +636,18 @@ void ticketsweep_command(struct discord *client,
   }
 
   g_sweep.index = 0;
+  g_sweep.closed_count = 0;
+  g_sweep.failed_count = 0;
+  g_sweep.pending_count = 0;
   g_sweep.report_channel_id = event->channel_id;
   g_sweep.timer_id =
       discord_timer_interval(client, &sweep_tick, NULL, &g_sweep, 0, 750, -1);
+  if (!g_sweep.timer_id) {
+    struct discord_create_message reply = {
+        .content = "Unable to start the ticket sweep timer. No tickets were processed."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
   char buf[64];
   snprintf(buf, sizeof buf, "sweeping %d open ticket(s)...", g_sweep.count);

@@ -1,0 +1,54 @@
+name: role-sync-parser
+
+on:
+  push:
+    branches: [fix/rolesync-authorization]
+  pull_request:
+
+jobs:
+  parser:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang libsqlite3-dev
+      - name: Build strict C11 parser tests
+        run: |
+          ${{ matrix.compiler }} -std=c11 -Wall -Wextra -Wpedantic -Werror \
+            -Iinclude srcs/roleutil/role_sync_parse.c \
+            tests/test_role_sync_parse.c -o /tmp/test-role-sync-parser
+      - name: Run parser tests
+        run: /tmp/test-role-sync-parser
+      - name: Build strict C11 cooldown tests
+        run: |
+          ${{ matrix.compiler }} -std=c11 -Wall -Wextra -Wpedantic -Werror \
+            -Iinclude srcs/customcom/cooldown.c \
+            tests/test_customcom_cooldown.c -lsqlite3 -o /tmp/test-customcom-cooldown
+      - name: Run cooldown tests
+        run: /tmp/test-customcom-cooldown
+      - name: Build GCC AddressSanitizer and UBSan tests
+        if: matrix.compiler == 'gcc'
+        run: |
+          gcc -std=c11 -O1 -g -fsanitize=address,undefined \
+            -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror \
+            -Iinclude srcs/roleutil/role_sync_parse.c \
+            tests/test_role_sync_parse.c -o /tmp/test-role-sync-parser-san
+      - name: Run sanitizer tests
+        if: matrix.compiler == 'gcc'
+        run: /tmp/test-role-sync-parser-san
+      - name: Build GCC cooldown sanitizer tests
+        if: matrix.compiler == 'gcc'
+        run: |
+          gcc -std=c11 -O1 -g -fsanitize=address,undefined \
+            -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror \
+            -Iinclude srcs/customcom/cooldown.c \
+            tests/test_customcom_cooldown.c -lsqlite3 -o /tmp/test-customcom-cooldown-san
+      - name: Run cooldown sanitizer tests
+        if: matrix.compiler == 'gcc'
+        run: /tmp/test-customcom-cooldown-san
