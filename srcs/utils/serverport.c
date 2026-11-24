@@ -1,6 +1,7 @@
 #include "utils/serverport.h"
 #include "customcom/customcom.h"
 #include "utils/utils.h"
+#include "roleutil/role_sync_parse.h"
 #include <concord/log.h>
 #include <inttypes.h>
 #include <sqlite3.h>
@@ -53,11 +54,11 @@ static void rolesync_map(struct discord *client,
                          const struct discord_message *event,
                          const char *args) {
   u64snowflake a_id = 0, b_id = 0;
+  const char *label_text = NULL;
   char label[64] = "";
-  int matched =
-      sscanf(args, " %" SCNu64 " %" SCNu64 " %63[^\n]", &a_id, &b_id, label);
 
-  if (matched < 2 || !a_id || !b_id) {
+  if (!rolesync_parse_pair(args, &a_id, &b_id, &label_text) ||
+      (label_text && strlen(label_text) >= sizeof label)) {
     struct discord_create_message reply = {
         .content = "usage: +rolesync map <roleA_id> <roleB_id> [label]"};
     discord_create_message(client, event->channel_id, &reply, NULL);
@@ -82,17 +83,25 @@ static void rolesync_map(struct discord *client,
     return;
   }
 
-  bool source_found = false, target_found = false;
-  for (int i = 0; i < roles_a.size; i++)
+  bool source_found = false, target_found = false, target_is_admin = false;
+  for (int i = 0; i < roles_a.size; i++) {
     if (roles_a.array[i].id == a_id)
       source_found = true;
-  for (int i = 0; i < roles_b.size; i++)
-    if (roles_b.array[i].id == b_id)
+  }
+  for (int i = 0; i < roles_b.size; i++) {
+    if (roles_b.array[i].id == b_id) {
       target_found = true;
+      target_is_admin =
+          (roles_b.array[i].permissions & DISCORD_PERM_ADMINISTRATOR) != 0;
+      break;
+    }
+  }
 
-  if (!source_found || !target_found) {
+  if (!source_found || !target_found || target_is_admin) {
     struct discord_create_message reply = {
-        .content = "Both role IDs must exist in their respective sync guilds."};
+        .content = target_is_admin
+                       ? "Administrator roles cannot be granted by role sync."
+                       : "Both role IDs must exist in their respective sync guilds."};
     discord_create_message(client, event->channel_id, &reply, NULL);
     return;
   }
@@ -113,10 +122,12 @@ static void rolesync_map(struct discord *client,
   }
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)a_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)b_id);
-  if (matched == 3)
+  if (label_text) {
+    snprintf(label, sizeof label, "%s", label_text);
     sqlite3_bind_text(stmt, 3, label, -1, SQLITE_TRANSIENT);
-  else
+  } else {
     sqlite3_bind_null(stmt, 3);
+  }
   int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 
@@ -138,8 +149,7 @@ static void rolesync_unmap(struct discord *client,
                            const struct discord_message *event,
                            const char *args) {
   u64snowflake a_id = 0;
-  sscanf(args, " %" SCNu64, &a_id);
-  if (!a_id) {
+  if (!rolesync_parse_u64(args, &a_id)) {
     struct discord_create_message reply = {
         .content = "usage: +rolesync unmap <roleA_id>"};
     discord_create_message(client, event->channel_id, &reply, NULL);
@@ -262,13 +272,23 @@ static void on_rolesync_fail(struct discord *client,
   fprintf(stderr, "rolesync: add_guild_member_role failed, code=%d\n",
           resp->code);
 }
+typedef struct {
+  u64snowflake user_id;
+} rolesync_lookup_context;
+
+static void rolesync_lookup_context_cleanup(struct discord *client,
+                                            void *data) {
+  (void)client;
+  free(data);
+}
+
 static void on_rolesync_member_lookup_fail(struct discord *client,
-                                               struct discord_response *resp) {
-  const struct discord_guild_member *event = resp->keep;
-  if (event && event->user) {
+                                           struct discord_response *resp) {
+  const rolesync_lookup_context *ctx = resp ? resp->data : NULL;
+  if (ctx) {
     log_info("rolesync: source-guild lookup failed for user %" PRIu64
              " (Discord code %d)",
-             event->user->id, resp->code);
+             ctx->user_id, resp->code);
   }
   (void)client;
 }
@@ -276,11 +296,19 @@ static void on_rolesync_member_lookup_fail(struct discord *client,
 static void on_rolesync_member_lookup_done(
     struct discord *client, struct discord_response *resp,
     const struct discord_guild_member *member_a) {
-  const struct discord_guild_member *event = resp->keep;
-  if (!event || !event->user || !member_a || !member_a->roles)
+  const rolesync_lookup_context *ctx = resp ? resp->data : NULL;
+  if (!ctx || !ctx->user_id || !member_a || !member_a->roles)
     return;
 
-  u64snowflake uid = event->user->id;
+  const u64snowflake uid = ctx->user_id;
+  struct discord_roles target_roles = {0};
+  struct discord_ret_roles target_ret = {.sync = &target_roles};
+  if (discord_get_guild_roles(client, GUILD_B_ID, &target_ret) != CCORD_OK) {
+    log_error("rolesync: unable to refresh target roles; no grants issued for user %"
+              PRIu64, uid);
+    return;
+  }
+
   sqlite3 *db = customcom_get_db();
   int queued = 0;
 
@@ -298,6 +326,22 @@ static void on_rolesync_member_lookup_done(
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       u64snowflake b_role = (u64snowflake)sqlite3_column_int64(stmt, 0);
       sqlite3_finalize(stmt);
+
+      bool target_found = false, target_is_admin = false;
+      for (int j = 0; j < target_roles.size; ++j) {
+        if (target_roles.array[j].id == b_role) {
+          target_found = true;
+          target_is_admin =
+              (target_roles.array[j].permissions &
+               DISCORD_PERM_ADMINISTRATOR) != 0;
+          break;
+        }
+      }
+      if (!target_found || target_is_admin) {
+        log_error("rolesync: refusing stale or Administrator target role %"
+                  PRIu64 " for user %" PRIu64, b_role, uid);
+        continue;
+      }
 
       struct discord_add_guild_member_role params = {.reason = "rolesync"};
       struct discord_ret ret = {.fail = &on_rolesync_fail};
@@ -326,17 +370,28 @@ void on_guild_member_add_rolesync(struct discord *client,
       !event->user)
     return;
 
+  rolesync_lookup_context *ctx = calloc(1, sizeof *ctx);
+  if (!ctx) {
+    log_error("rolesync: unable to allocate lookup context for user %" PRIu64,
+              event->user->id);
+    return;
+  }
+  ctx->user_id = event->user->id;
+
   struct discord_ret_guild_member ret = {
+      .data = ctx,
+      .cleanup = &rolesync_lookup_context_cleanup,
       .done = &on_rolesync_member_lookup_done,
       .fail = &on_rolesync_member_lookup_fail,
-      .keep = event,
   };
   CCORDcode status =
-      discord_get_guild_member(client, GUILD_A_ID, event->user->id, &ret);
-  if (status != CCORD_PENDING)
+      discord_get_guild_member(client, GUILD_A_ID, ctx->user_id, &ret);
+  if (status != CCORD_PENDING) {
     log_error("rolesync: failed to queue source-guild member lookup for user %"
               PRIu64 " (code %d)",
-              event->user->id, status);
+              ctx->user_id, status);
+    free(ctx);
+  }
 }
 
 static void rolesync_generate(struct discord *client,
@@ -380,7 +435,8 @@ static void rolesync_generate(struct discord *client,
     u64snowflake b_id = 0;
     bool found = false;
     for (int j = 0; j < roles_b.size; j++) {
-      if (strcmp(roles_b.array[j].name, a_name) == 0) {
+      if (strcmp(roles_b.array[j].name, a_name) == 0 &&
+          !(roles_b.array[j].permissions & DISCORD_PERM_ADMINISTRATOR)) {
         b_id = roles_b.array[j].id;
         found = true;
         break;
