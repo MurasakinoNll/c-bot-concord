@@ -170,15 +170,26 @@ static const struct {
 
 void rolesync_command(struct discord *client,
                       const struct discord_message *event) {
-  if (event->author->bot)
+  if (!event || !event->author || event->author->bot)
     return;
 
-  // UserCtx ctx = get_ctx_from_message(event);
-  // u64snowflake allowlist[] = {1155152569526669391ULL,
-  // 1549499601093009449ULL}; if (!check_perm_byrole(&ctx, allowlist, 2)) {
-  //   fprintf(stderr, "rolesync rejected, invalid permissions\n");
-  //   return;
-  // }
+  /*
+   * Role-sync mappings are shared by the two configured guilds. Do not allow
+   * commands from DMs or unrelated guilds to change that shared configuration.
+   */
+  if (event->guild_id != GUILD_A_ID && event->guild_id != GUILD_B_ID)
+    return;
+
+  UserCtx ctx = get_ctx_from_message(event);
+  u64snowflake allowlist[] = {1155152569526669391ULL,
+                              1549499601093009449ULL};
+  if (!check_perm_byrole(&ctx, allowlist,
+                         (int)(sizeof allowlist / sizeof allowlist[0]))) {
+    struct discord_create_message reply = {
+        .content = "You do not have permission to manage role sync."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
 
   char sub[16] = "";
   int n = 0;
