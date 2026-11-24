@@ -74,7 +74,9 @@ static void rolesync_map(struct discord *client,
   char label[64] = "";
 
   if (!rolesync_parse_pair(args, &a_id, &b_id, &label_text) ||
-      (label_text && strlen(label_text) >= sizeof label)) {
+      (label_text &&
+       (strlen(label_text) >= sizeof label ||
+        strpbrk(label_text, "\r\n") != NULL))) {
     struct discord_create_message reply = {
         .content = "usage: +rolesync map <roleA_id> <roleB_id> [label]"};
     discord_create_message(client, event->channel_id, &reply, NULL);
@@ -498,6 +500,7 @@ static void rolesync_generate(struct discord *client,
     }
 
     bool saved = false;
+    bool mapping_conflict = false;
     if (found) {
       sqlite3_stmt *stmt = NULL;
       if (sqlite3_prepare_v2(
@@ -508,13 +511,39 @@ static void rolesync_generate(struct discord *client,
         sqlite3_bind_int64(stmt, 1, (sqlite3_int64)a_id);
         sqlite3_bind_int64(stmt, 2, (sqlite3_int64)b_id);
         sqlite3_bind_text(stmt, 3, a_name, -1, SQLITE_TRANSIENT);
-        saved = sqlite3_step(stmt) == SQLITE_DONE;
+        int insert_rc = sqlite3_step(stmt);
+        int inserted = sqlite3_changes(db);
         sqlite3_finalize(stmt);
+
+        if (insert_rc == SQLITE_DONE && inserted > 0) {
+          saved = true;
+        } else if (insert_rc == SQLITE_DONE) {
+          /* INSERT OR IGNORE preserves manual mappings. Report the existing
+           * same-target mapping as matched, but never claim a conflict synced. */
+          sqlite3_stmt *existing = NULL;
+          if (sqlite3_prepare_v2(
+                  db,
+                  "SELECT guild_b_role_id FROM role_sync_map "
+                  "WHERE guild_a_role_id = ?",
+                  -1, &existing, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(existing, 1, (sqlite3_int64)a_id);
+            if (sqlite3_step(existing) == SQLITE_ROW) {
+              u64snowflake existing_b =
+                  (u64snowflake)sqlite3_column_int64(existing, 0);
+              saved = existing_b == b_id;
+              mapping_conflict = existing_b != b_id;
+            }
+            sqlite3_finalize(existing);
+          }
+        }
       }
     }
 
     char line[160];
-    int n = snprintf(line, sizeof line, "%s\n", a_name);
+    int n = mapping_conflict
+                ? snprintf(line, sizeof line,
+                           "%s (existing manual mapping kept)\\n", a_name)
+                : snprintf(line, sizeof line, "%s\\n", a_name);
     if (n < 0 || (size_t)n >= sizeof line) {
       free(matched);
       free(unmatched);
@@ -555,7 +584,8 @@ static void rolesync_generate(struct discord *client,
     log_error("rolesync: out of memory finalizing generation report");
     return;
   }
-  snprintf(report, report_cap, "**synced:**\n%s\n**no match found:**\n%s",
+  snprintf(report, report_cap,
+           "**synced:**\n%s\n**not auto-mapped (no safe match or manual mapping kept):**\n%s",
            any_matched ? matched : "none\n",
            any_unmatched ? unmatched : "none\n");
 
