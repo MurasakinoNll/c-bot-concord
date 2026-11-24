@@ -238,8 +238,13 @@ void close_ticket(struct discord *client, const struct discord_message *event) {
     discord_create_message(client, event->channel_id, &reply, NULL);
     return;
   }
-  close_ticket_channel(client, event->channel_id, row.owner_username,
-                       row.ticket_num);
+  if (!close_ticket_channel(client, event->channel_id, row.owner_username,
+                             row.ticket_num)) {
+    struct discord_create_message failed = {
+        .content = "The ticket could not be archived. Its database state was left open."};
+    discord_create_message(client, event->channel_id, &failed, NULL);
+    return;
+  }
 
   struct discord_create_message reply = {.content =
                                              "Ticket closed. \xE2\x9C\x85"};
@@ -248,7 +253,7 @@ void close_ticket(struct discord *client, const struct discord_message *event) {
 #define TICKET_GUILD_ID 1155152569040130101ULL
 #define TICKET_ARCHIVE_CATEGORY 1552818898947145768ULL
 
-static void close_ticket_channel(struct discord *client,
+static bool close_ticket_channel(struct discord *client,
                                  u64snowflake channel_id,
                                  const char *owner_username, int ticket_num) {
   char new_name[256];
@@ -259,7 +264,13 @@ static void close_ticket_channel(struct discord *client,
       .name = new_name,
       .parent_id = TICKET_ARCHIVE_CATEGORY,
   };
-  discord_modify_channel(client, channel_id, &params, NULL);
+  CCORDcode discord_status =
+      discord_modify_channel(client, channel_id, &params, NULL);
+  if (discord_status != CCORD_OK) {
+    log_error("ticket channel archive failed for channel %llu: %d",
+              (unsigned long long)channel_id, discord_status);
+    return false;
+  }
 
   sqlite3 *db = customcom_get_db();
   sqlite3_stmt *stmt;
@@ -267,8 +278,9 @@ static void close_ticket_channel(struct discord *client,
       db, "UPDATE tickets SET status = 'closed' WHERE channel_id = ?", -1,
       &stmt, NULL);
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)channel_id);
-  sqlite3_step(stmt);
+  int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE && sqlite3_changes(db) > 0;
 }
 
 void on_guild_member_remove_ticket_close(
@@ -315,6 +327,8 @@ typedef struct {
   sweep_item items[SWEEP_MAX_ITEMS];
   int count;
   int index;
+  int closed_count;
+  int failed_count;
   u64snowflake report_channel_id;
   unsigned timer_id;
 } sweep_state;
@@ -326,8 +340,9 @@ static void sweep_tick(struct discord *client, struct discord_timer *timer) {
 
   if (state->index >= state->count) {
     char buf[64];
-    snprintf(buf, sizeof buf, "Ticket sweep complete: %d ticket(s) closed.",
-             state->count);
+    snprintf(buf, sizeof buf,
+             "Ticket sweep complete: %d closed, %d failed.",
+             state->closed_count, state->failed_count);
     struct discord_create_message reply = {.content = buf};
     discord_create_message(client, state->report_channel_id, &reply, NULL);
     discord_timer_cancel_and_delete(client, state->timer_id);
@@ -336,8 +351,11 @@ static void sweep_tick(struct discord *client, struct discord_timer *timer) {
   }
 
   sweep_item *item = &state->items[state->index];
-  close_ticket_channel(client, item->channel_id, item->owner_username,
-                       item->ticket_num);
+  if (close_ticket_channel(client, item->channel_id, item->owner_username,
+                           item->ticket_num))
+    state->closed_count++;
+  else
+    state->failed_count++;
   state->index++;
 }
 
@@ -386,6 +404,8 @@ void ticketsweep_command(struct discord *client,
   }
 
   g_sweep.index = 0;
+  g_sweep.closed_count = 0;
+  g_sweep.failed_count = 0;
   g_sweep.report_channel_id = event->channel_id;
   g_sweep.timer_id =
       discord_timer_interval(client, &sweep_tick, NULL, &g_sweep, 0, 750, -1);
