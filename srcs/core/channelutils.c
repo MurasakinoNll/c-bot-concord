@@ -311,10 +311,15 @@ void on_guild_member_remove_ticket_close(
     strncpy(owner_username, (const char *)sqlite3_column_text(stmt, 2),
             sizeof(owner_username) - 1);
 
-    close_ticket_channel(client, channel_id, owner_username, ticket_num);
-    log_info("ticket: auto-closed channel %" PRIu64 " (owner %" PRIu64
-             " left/kicked/banned)",
-             channel_id, uid);
+    if (close_ticket_channel(client, channel_id, owner_username, ticket_num)) {
+      log_info("ticket: auto-closed channel %" PRIu64
+               " (owner %" PRIu64 " left/kicked/banned)",
+               channel_id, uid);
+    } else {
+      log_error("ticket: failed to close channel %" PRIu64
+                " after owner %" PRIu64 " left",
+                channel_id, uid);
+    }
   }
   sqlite3_finalize(stmt);
 }
