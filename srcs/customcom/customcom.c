@@ -276,45 +276,67 @@ void cc_trigger_check(struct discord *client, const struct discord_message *even
   if (n->cooldown > 0) {
     sqlite3_stmt *stmt = NULL;
     time_t now = time(NULL);
-    time_t last_used = 0;
-    if (sqlite3_prepare_v2(
-            db,
-            "SELECT last_used FROM customcom_cooldowns "
-            "WHERE user_id = ? AND command_name = ?",
-            -1, &stmt, NULL) != SQLITE_OK)
+    if (now < 0)
       return;
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->author->id);
-    sqlite3_bind_text(stmt, 2, word, -1, SQLITE_TRANSIENT);
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-      last_used = (time_t)sqlite3_column_int64(stmt, 0);
-    sqlite3_finalize(stmt);
 
-    if (last_used > 0 && now >= last_used &&
-        now - last_used < n->cooldown) {
-      char notice[128];
-      long remaining = (long)n->cooldown - (long)(now - last_used);
-      snprintf(notice, sizeof notice,
-               "Please wait %ld more second(s) before using +%s again.",
-               remaining, word);
-      struct discord_create_message limited = {.content = notice};
-      discord_create_message(client, event->channel_id, &limited, NULL);
-      return;
-    }
-
+    /*
+     * Acquire the per-user cooldown atomically. A SELECT followed by an
+     * UPSERT has a race: two concurrent gateway callbacks can both pass the
+     * SELECT and both execute the command.
+     */
     if (sqlite3_prepare_v2(
             db,
             "INSERT INTO customcom_cooldowns (user_id, command_name, last_used) "
             "VALUES (?, ?, ?) ON CONFLICT(user_id, command_name) "
-            "DO UPDATE SET last_used = excluded.last_used",
+            "DO UPDATE SET last_used = excluded.last_used "
+            "WHERE excluded.last_used >= customcom_cooldowns.last_used "
+            "AND excluded.last_used - customcom_cooldowns.last_used >= ?",
             -1, &stmt, NULL) != SQLITE_OK)
       return;
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->author->id);
     sqlite3_bind_text(stmt, 2, word, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, (sqlite3_int64)now);
+    sqlite3_bind_int(stmt, 4, n->cooldown);
     int rc = sqlite3_step(stmt);
+    int acquired = sqlite3_changes(db);
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE)
       return;
+
+    if (acquired == 0) {
+      if (sqlite3_prepare_v2(
+              db,
+              "SELECT last_used FROM customcom_cooldowns "
+              "WHERE user_id = ? AND command_name = ?",
+              -1, &stmt, NULL) != SQLITE_OK)
+        return;
+      sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->author->id);
+      sqlite3_bind_text(stmt, 2, word, -1, SQLITE_TRANSIENT);
+      int select_rc = sqlite3_step(stmt);
+      if (select_rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return;
+      }
+
+      sqlite3_int64 last_used = sqlite3_column_int64(stmt, 0);
+      sqlite3_finalize(stmt);
+      sqlite3_int64 elapsed =
+          (sqlite3_int64)now >= last_used
+              ? (sqlite3_int64)now - last_used
+              : 0;
+      sqlite3_int64 remaining =
+          (sqlite3_int64)n->cooldown - elapsed;
+      if (remaining < 1)
+        remaining = 1;
+
+      char notice[160];
+      snprintf(notice, sizeof notice,
+               "Please wait %lld more second(s) before using +%s again.",
+               (long long)remaining, word);
+      struct discord_create_message limited = {.content = notice};
+      discord_create_message(client, event->channel_id, &limited, NULL);
+      return;
+    }
   }
 
   struct discord_create_message reply = { .content = n->response };
