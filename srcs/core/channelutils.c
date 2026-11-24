@@ -24,6 +24,22 @@ void ticket_db_init(void) {
                NULL, NULL, NULL);
   sqlite3_exec(db, "ALTER TABLE tickets ADD COLUMN owner_username TEXT;", NULL,
                NULL, NULL);
+  sqlite3_exec(
+      db,
+      "CREATE TRIGGER IF NOT EXISTS tickets_one_open_per_owner_insert "
+      "BEFORE INSERT ON tickets WHEN NEW.status = 'open' AND EXISTS ("
+      "SELECT 1 FROM tickets WHERE owner_id = NEW.owner_id AND status = 'open') "
+      "BEGIN SELECT RAISE(ABORT, 'owner already has an open ticket'); END;",
+      NULL, NULL, NULL);
+  sqlite3_exec(
+      db,
+      "CREATE TRIGGER IF NOT EXISTS tickets_one_open_per_owner_update "
+      "BEFORE UPDATE OF owner_id, status ON tickets "
+      "WHEN NEW.status = 'open' AND EXISTS ("
+      "SELECT 1 FROM tickets WHERE owner_id = NEW.owner_id AND status = 'open' "
+      "AND channel_id <> OLD.channel_id) "
+      "BEGIN SELECT RAISE(ABORT, 'owner already has an open ticket'); END;",
+      NULL, NULL, NULL);
 }
 
 static u64snowflake ticket_find_open(u64snowflake owner_id) {
@@ -43,7 +59,7 @@ static u64snowflake ticket_find_open(u64snowflake owner_id) {
   return found;
 }
 
-static void ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
+static bool ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
                           int ticket_num, const char *username) {
   sqlite3 *db = customcom_get_db();
   sqlite3_stmt *stmt;
@@ -63,6 +79,7 @@ static void ticket_insert(u64snowflake channel_id, u64snowflake owner_id,
     fprintf(stderr, "ticket_insert OK: channel_id=%" PRIu64 "\n", channel_id);
   }
   sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE;
 }
 
 void channel_create(struct discord *client,
@@ -143,7 +160,26 @@ void channel_create(struct discord *client,
     return;
   }
 
-  ticket_insert(new_channel.id, owner_id, tc, event->member->user->username);
+  if (!ticket_insert(new_channel.id, owner_id, tc,
+                     event->member->user->username)) {
+    char error[160];
+    snprintf(error, sizeof error,
+             "Your ticket channel was created, but its record could not be saved. "
+             "Please contact staff and reference channel <#%llu>.",
+             (unsigned long long)new_channel.id);
+    struct discord_interaction_response failed = {
+        .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
+        .data = &(struct discord_interaction_callback_data){
+            .content = error,
+            .flags = DISCORD_MESSAGE_EPHEMERAL,
+        },
+    };
+    discord_create_interaction_response(client, event->id, event->token,
+                                        &failed, NULL);
+    log_error("ticket record insert failed; orphan channel=%" PRIu64,
+              new_channel.id);
+    return;
+  }
 
   struct discord_interaction_response resp = {
       .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
