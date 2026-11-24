@@ -542,8 +542,8 @@ static void rolesync_generate(struct discord *client,
     char line[160];
     int n = mapping_conflict
                 ? snprintf(line, sizeof line,
-                           "%s (existing manual mapping kept)\\n", a_name)
-                : snprintf(line, sizeof line, "%s\\n", a_name);
+                           "%s (existing manual mapping kept)\n", a_name)
+                : snprintf(line, sizeof line, "%s\n", a_name);
     if (n < 0 || (size_t)n >= sizeof line) {
       free(matched);
       free(unmatched);
