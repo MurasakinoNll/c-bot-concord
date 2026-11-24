@@ -405,26 +405,44 @@ void on_guild_member_remove_ticket_close(
   sqlite3 *db = customcom_get_db();
   sqlite3_stmt *stmt;
 
-  sqlite3_prepare_v2(db,
-                     "SELECT channel_id, ticket_num, owner_username FROM "
-                     "tickets WHERE owner_id = ? AND status = 'open'",
-                     -1, &stmt, NULL);
+  sweep_item pending[SWEEP_MAX_ITEMS];
+  int pending_count = 0;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT channel_id, ticket_num, owner_username FROM tickets "
+          "WHERE owner_id = ? AND status = 'open'",
+          -1, &stmt, NULL) != SQLITE_OK) {
+    log_error("ticket: failed to load open tickets for departing user %"
+              PRIu64,
+              uid);
+    return;
+  }
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)uid);
 
   while (sqlite3_step(stmt) == SQLITE_ROW) {
-    u64snowflake channel_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
-    int ticket_num = sqlite3_column_int(stmt, 1);
-    char owner_username[64] = "";
-    strncpy(owner_username, (const char *)sqlite3_column_text(stmt, 2),
-            sizeof(owner_username) - 1);
-
-    if (ticket_close_channel(client, channel_id, owner_username, ticket_num,
-                             0, NULL))
-      log_info("ticket: archive request queued for channel %" PRIu64
-               " after owner %" PRIu64 " left/kicked/banned",
-               channel_id, uid);
+    if (pending_count == SWEEP_MAX_ITEMS) {
+      log_error("ticket: more than %d open tickets for user %" PRIu64
+                "; remaining channels were not queued",
+                SWEEP_MAX_ITEMS, uid);
+      break;
+    }
+    sweep_item *item = &pending[pending_count++];
+    item->channel_id = (u64snowflake)sqlite3_column_int64(stmt, 0);
+    item->ticket_num = sqlite3_column_int(stmt, 1);
+    snprintf(item->owner_username, sizeof item->owner_username, "%s",
+             (const char *)sqlite3_column_text(stmt, 2));
   }
   sqlite3_finalize(stmt);
+
+  /* Submit only after closing the read cursor: REST callbacks may write SQLite. */
+  for (int i = 0; i < pending_count; i++) {
+    sweep_item *item = &pending[i];
+    if (ticket_close_channel(client, item->channel_id, item->owner_username,
+                             item->ticket_num, 0, NULL))
+      log_info("ticket: archive request queued for channel %" PRIu64
+               " after owner %" PRIu64 " left/kicked/banned",
+               item->channel_id, uid);
+  }
 }
 
 static void sweep_tick(struct discord *client, struct discord_timer *timer) {
