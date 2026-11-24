@@ -64,24 +64,72 @@ static void rolesync_map(struct discord *client,
     return;
   }
 
+  if (a_id == GUILD_A_ID || b_id == GUILD_B_ID) {
+    struct discord_create_message reply = {
+        .content = "The @everyone role cannot be mapped."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
+  struct discord_roles roles_a = {0}, roles_b = {0};
+  struct discord_ret_roles ret_a = {.sync = &roles_a};
+  struct discord_ret_roles ret_b = {.sync = &roles_b};
+  if (discord_get_guild_roles(client, GUILD_A_ID, &ret_a) != CCORD_OK ||
+      discord_get_guild_roles(client, GUILD_B_ID, &ret_b) != CCORD_OK) {
+    struct discord_create_message reply = {
+        .content = "Unable to verify roles with Discord. No mapping was saved."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
+  bool source_found = false, target_found = false;
+  for (int i = 0; i < roles_a.size; i++)
+    if (roles_a.array[i].id == a_id)
+      source_found = true;
+  for (int i = 0; i < roles_b.size; i++)
+    if (roles_b.array[i].id == b_id)
+      target_found = true;
+
+  if (!source_found || !target_found) {
+    struct discord_create_message reply = {
+        .content = "Both role IDs must exist in their respective sync guilds."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  sqlite3_prepare_v2(
-      db,
-      "INSERT INTO role_sync_map (guild_a_role_id, guild_b_role_id, label) "
-      "VALUES (?, ?, ?) "
-      "ON CONFLICT(guild_a_role_id) DO UPDATE SET guild_b_role_id = "
-      "excluded.guild_b_role_id, label = excluded.label",
-      -1, &stmt, NULL);
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(
+          db,
+          "INSERT INTO role_sync_map (guild_a_role_id, guild_b_role_id, label) "
+          "VALUES (?, ?, ?) "
+          "ON CONFLICT(guild_a_role_id) DO UPDATE SET guild_b_role_id = "
+          "excluded.guild_b_role_id, label = excluded.label",
+          -1, &stmt, NULL) != SQLITE_OK) {
+    struct discord_create_message reply = {
+        .content = "Database error: role mapping was not saved."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)a_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)b_id);
   if (matched == 3)
-    sqlite3_bind_text(stmt, 3, label, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, label, -1, SQLITE_TRANSIENT);
   else
     sqlite3_bind_null(stmt, 3);
-  sqlite3_step(stmt);
+  int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 
+  if (rc != SQLITE_DONE) {
+    struct discord_create_message reply = {
+        .content = "Database error: role mapping was not saved."};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
+  log_info("rolesync mapping updated by user %" PRIu64
+           " in guild %" PRIu64 ": %" PRIu64 " -> %" PRIu64,
+           event->author->id, event->guild_id, a_id, b_id);
   struct discord_create_message reply = {.content = "role mapping saved."};
   discord_create_message(client, event->channel_id, &reply, NULL);
 }
