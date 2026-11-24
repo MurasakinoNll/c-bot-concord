@@ -1,4 +1,5 @@
 #include <concord/discord.h>
+#include <concord/log.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
@@ -273,7 +274,7 @@ static void cc_cache_insert(const char *name, const char *response, int cooldown
   }
   cc_node *n = calloc(1, sizeof *n);
   if (!n) {
-    fprintf(stderr, "cc: unable to allocate custom-command cache entry\\n");
+    fprintf(stderr, "cc: unable to allocate custom-command cache entry\n");
     return;
   }
   strncpy(n->name, name, sizeof(n->name) - 1);
