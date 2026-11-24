@@ -22,6 +22,12 @@ void msglimit_db_init(void) {
                "text_count INTEGER DEFAULT 0, media_count INTEGER DEFAULT 0, "
                "PRIMARY KEY(guild_id, user_id, day));",
                NULL, NULL, NULL);
+  sqlite3_exec(db,
+               "CREATE TABLE IF NOT EXISTS msglimit_message_state ("
+               "message_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL, "
+               "user_id INTEGER NOT NULL, day TEXT NOT NULL, "
+               "is_media INTEGER NOT NULL, counted INTEGER NOT NULL DEFAULT 0);",
+               NULL, NULL, NULL);
 }
 
 static void get_today_utc(char *buf, size_t sz) {
@@ -117,19 +123,18 @@ void msglimit_command(struct discord *client,
 
 bool msglimit_enforce(struct discord *client,
                       const struct discord_message *event) {
-  if (event->author->bot)
-    return false;
-  if (!event->guild_id)
+  if (!event || !event->author || event->author->bot || !event->guild_id)
     return false;
 
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = NULL;
   int text_limit = 0, media_limit = 0;
 
-  sqlite3_prepare_v2(db,
-                     "SELECT text_limit, media_limit FROM msglimit_settings "
-                     "WHERE guild_id = ? AND user_id = ?",
-                     -1, &stmt, NULL);
+  if (sqlite3_prepare_v2(db,
+                         "SELECT text_limit, media_limit FROM msglimit_settings "
+                         "WHERE guild_id = ? AND user_id = ?",
+                         -1, &stmt, NULL) != SQLITE_OK)
+    return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
   if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -138,35 +143,62 @@ bool msglimit_enforce(struct discord *client,
   }
   sqlite3_finalize(stmt);
 
-  bool is_media = message_is_media(event);
-  int limit = is_media ? media_limit : text_limit;
-  if (limit <= 0)
-    return false;
   char day[16];
   get_today_utc(day, sizeof day);
+  bool is_media = message_is_media(event);
+  int limit = is_media ? media_limit : text_limit;
   const char *col = is_media ? "media_count" : "text_count";
+
+  if (sqlite3_prepare_v2(
+          db,
+          "INSERT OR IGNORE INTO msglimit_message_state "
+          "(message_id, guild_id, user_id, day, is_media, counted) "
+          "VALUES (?, ?, ?, ?, ?, 0)",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return false;
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->id);
+  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->guild_id);
+  sqlite3_bind_int64(stmt, 3, (sqlite3_int64)event->author->id);
+  sqlite3_bind_text(stmt, 4, day, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt, 5, is_media ? 1 : 0);
+  int insert_rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  if (insert_rc != SQLITE_DONE || sqlite3_changes(db) == 0 || limit <= 0)
+    return false;
 
   char sql[256];
   snprintf(sql, sizeof sql,
-           "INSERT INTO msglimit_counts (guild_id, user_id, day, %s) VALUES "
-           "(?, ?, ?, 1) "
-           "ON CONFLICT(guild_id, user_id, day) DO UPDATE SET %s = %s + 1",
+           "INSERT INTO msglimit_counts (guild_id, user_id, day, %s) "
+           "VALUES (?, ?, ?, 1) ON CONFLICT(guild_id, user_id, day) "
+           "DO UPDATE SET %s = %s + 1",
            col, col, col);
-  sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+    return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
+  int count_rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  if (count_rc != SQLITE_DONE)
+    return false;
+
+  sqlite3_prepare_v2(
+      db,
+      "UPDATE msglimit_message_state SET counted = 1 WHERE message_id = ?",
+      -1, &stmt, NULL);
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->id);
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 
-  snprintf(
-      sql, sizeof sql,
-      "SELECT %s FROM msglimit_counts WHERE guild_id=? AND user_id=? AND day=?",
-      col);
-  sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+  snprintf(sql, sizeof sql,
+           "SELECT %s FROM msglimit_counts WHERE guild_id=? AND user_id=? "
+           "AND day=?",
+           col);
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+    return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
   int count = 0;
   if (sqlite3_step(stmt) == SQLITE_ROW)
     count = sqlite3_column_int(stmt, 0);
@@ -183,60 +215,121 @@ bool message_is_forwarded(const struct discord_message *event) {
   return event->message_reference && event->message_reference->type == 1;
 }
 
-static bool apply_media_check(struct discord *client,
+static bool apply_edit_check(struct discord *client,
                               const struct discord_message *event) {
-  if (!event->guild_id)
-    return false;
-  if (!event->author || event->author->bot)
-    return false;
-  if (!message_is_media(event))
+  if (!event || !event->guild_id || !event->author || event->author->bot)
     return false;
 
   sqlite3 *db = customcom_get_db();
-  sqlite3_stmt *stmt;
-  int media_limit = 0;
+  sqlite3_stmt *stmt = NULL;
+  char day[16] = "";
+  int was_media = 0, was_counted = 0;
 
-  sqlite3_prepare_v2(db,
-                     "SELECT media_limit FROM msglimit_settings WHERE guild_id "
-                     "= ? AND user_id = ?",
-                     -1, &stmt, NULL);
-  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
-  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    media_limit = sqlite3_column_int(stmt, 0);
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT day, is_media, counted FROM msglimit_message_state "
+          "WHERE message_id = ? AND guild_id = ? AND user_id = ?",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return false;
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->id);
+  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->guild_id);
+  sqlite3_bind_int64(stmt, 3, (sqlite3_int64)event->author->id);
+  if (sqlite3_step(stmt) != SQLITE_ROW) {
+    sqlite3_finalize(stmt);
+    return false; /* Do not retroactively recount messages predating this ledger. */
+  }
+  snprintf(day, sizeof day, "%s",
+           (const char *)sqlite3_column_text(stmt, 0));
+  was_media = sqlite3_column_int(stmt, 1);
+  was_counted = sqlite3_column_int(stmt, 2);
   sqlite3_finalize(stmt);
 
-  if (media_limit <= 0)
+  bool is_media = message_is_media(event);
+  if (was_media == (is_media ? 1 : 0))
     return false;
 
-  char day[16];
-  get_today_utc(day, sizeof day);
-
-  sqlite3_prepare_v2(db,
-                     "INSERT INTO msglimit_counts (guild_id, user_id, day, "
-                     "media_count) VALUES (?, ?, ?, 1) "
-                     "ON CONFLICT(guild_id, user_id, day) DO UPDATE SET "
-                     "media_count = media_count + 1",
-                     -1, &stmt, NULL);
+  int text_limit = 0, media_limit = 0;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT text_limit, media_limit FROM msglimit_settings "
+          "WHERE guild_id = ? AND user_id = ?",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    text_limit = sqlite3_column_int(stmt, 0);
+    media_limit = sqlite3_column_int(stmt, 1);
+  }
+  sqlite3_finalize(stmt);
+
+  const char *old_col = was_media ? "media_count" : "text_count";
+  const char *new_col = is_media ? "media_count" : "text_count";
+  int new_limit = is_media ? media_limit : text_limit;
+  char sql[256];
+
+  if (was_counted) {
+    snprintf(sql, sizeof sql,
+             "UPDATE msglimit_counts SET %s = CASE WHEN %s > 0 THEN %s - 1 "
+             "ELSE 0 END WHERE guild_id = ? AND user_id = ? AND day = ?",
+             old_col, old_col, old_col);
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+      return false;
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
+    sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+
+  bool now_counted = new_limit > 0;
+  if (now_counted) {
+    snprintf(sql, sizeof sql,
+             "INSERT INTO msglimit_counts (guild_id, user_id, day, %s) "
+             "VALUES (?, ?, ?, 1) ON CONFLICT(guild_id, user_id, day) "
+             "DO UPDATE SET %s = %s + 1",
+             new_col, new_col, new_col);
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+      return false;
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
+    sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+      return false;
+  }
+
+  if (sqlite3_prepare_v2(
+          db,
+          "UPDATE msglimit_message_state SET is_media = ?, counted = ? "
+          "WHERE message_id = ?",
+          -1, &stmt, NULL) != SQLITE_OK)
+    return false;
+  sqlite3_bind_int(stmt, 1, is_media ? 1 : 0);
+  sqlite3_bind_int(stmt, 2, now_counted ? 1 : 0);
+  sqlite3_bind_int64(stmt, 3, (sqlite3_int64)event->id);
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 
-  sqlite3_prepare_v2(db,
-                     "SELECT media_count FROM msglimit_counts WHERE guild_id=? "
-                     "AND user_id=? AND day=?",
-                     -1, &stmt, NULL);
+  if (!now_counted)
+    return false;
+
+  snprintf(sql, sizeof sql,
+           "SELECT %s FROM msglimit_counts WHERE guild_id=? AND user_id=? "
+           "AND day=?",
+           new_col);
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+    return false;
   sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
   sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_TRANSIENT);
   int count = 0;
   if (sqlite3_step(stmt) == SQLITE_ROW)
     count = sqlite3_column_int(stmt, 0);
   sqlite3_finalize(stmt);
 
-  if (count > media_limit) {
+  if (count > new_limit) {
     discord_delete_message(client, event->channel_id, event->id, NULL, NULL);
     return true;
   }
@@ -245,5 +338,5 @@ static bool apply_media_check(struct discord *client,
 
 void msglimit_enforce_edit(struct discord *client,
                            const struct discord_message *event) {
-  apply_media_check(client, event);
+  apply_edit_check(client, event);
 }
