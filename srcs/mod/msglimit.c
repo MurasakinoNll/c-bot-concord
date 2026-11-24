@@ -2,7 +2,9 @@
 #include "customcom/customcom.h"
 #include "utils/utils.h"
 #include "roleutil/role_sync_parse.h"
+#include <concord/discord.h>
 #include <concord/discord_codecs.h>
+#include <concord/types.h>
 #include <sqlite3.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -140,7 +142,7 @@ void msglimit_command(struct discord *client,
       msglimit_only_space(limit_start + n3) &&
       parse_nonnegative_limit(limit_token, &limit);
 
-  if (!col || !target_uid || !limit_valid) {
+  if (!col || !target_uid || target_uid > (u64snowflake)INT64_MAX || !limit_valid) {
     struct discord_create_message reply = {
         .content = "usage: +msglimit text <uid|mention> <int> | +msglimit "
                    "media <uid|mention> <int>"};
