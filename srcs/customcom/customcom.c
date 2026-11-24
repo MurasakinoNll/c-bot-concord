@@ -1,6 +1,8 @@
 #include <concord/discord.h>
 #include <sqlite3.h>
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "customcom//customcom.h"
 #include "utils/utils.h"
 static sqlite3 *db;
@@ -56,6 +58,12 @@ void customcom_init(void) {
                   sqlite3_column_int(stmt, 2));
 }
 sqlite3_finalize(stmt);
+sqlite3_exec(db,
+             "CREATE TABLE IF NOT EXISTS customcom_cooldowns ("
+             "user_id INTEGER NOT NULL, command_name TEXT NOT NULL, "
+             "last_used INTEGER NOT NULL, "
+             "PRIMARY KEY(user_id, command_name));",
+             NULL, NULL, NULL);
 }
 
 void cc_create(struct discord *client, const struct discord_message *event, const char *args) {
@@ -156,7 +164,7 @@ void cc_cooldown(struct discord *client, const struct discord_message *event, co
   int seconds = -1;
   int matched = sscanf(args, " %63s %d", name, &seconds);
 
-  if (matched < 1 || !*name) {
+  if (matched < 1 || !*name || (matched >= 2 && seconds < 0)) {
     fprintf(stderr, "cc cooldown: usage <name> [seconds]\n");
     return;
   }
@@ -185,7 +193,9 @@ void cc_cooldown(struct discord *client, const struct discord_message *event, co
 
     if (changed > 0) {
       snprintf(buf, sizeof buf, "Cooldown for '%s' set to %ds.", name, seconds);
-      cc_cache_insert(name, cc_lookup(name)->response, seconds);   // buggy section relating to under
+      cc_node *cached = cc_lookup(name);
+      if (cached)
+        cached->cooldown = seconds;
     } else {
       snprintf(buf, sizeof buf, "No command named '%s'.", name);
     }
@@ -250,7 +260,8 @@ static void cc_cache_remove(const char *name) {
 }
 
 void cc_trigger_check(struct discord *client, const struct discord_message *event) {
-  if (event->author->bot) return;
+  if (!event || !event->author || event->author->bot || !event->content)
+    return;
 
   size_t prefix_len = strlen("+");
   if (strncmp(event->content, "+", prefix_len) != 0) return;
@@ -261,6 +272,50 @@ void cc_trigger_check(struct discord *client, const struct discord_message *even
 
   cc_node *n = cc_lookup(word);
   if (!n) return;
+
+  if (n->cooldown > 0) {
+    sqlite3_stmt *stmt = NULL;
+    time_t now = time(NULL);
+    time_t last_used = 0;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT last_used FROM customcom_cooldowns "
+            "WHERE user_id = ? AND command_name = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+      return;
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->author->id);
+    sqlite3_bind_text(stmt, 2, word, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+      last_used = (time_t)sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+
+    if (last_used > 0 && now >= last_used &&
+        now - last_used < n->cooldown) {
+      char notice[128];
+      long remaining = (long)n->cooldown - (long)(now - last_used);
+      snprintf(notice, sizeof notice,
+               "Please wait %ld more second(s) before using +%s again.",
+               remaining, word);
+      struct discord_create_message limited = {.content = notice};
+      discord_create_message(client, event->channel_id, &limited, NULL);
+      return;
+    }
+
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO customcom_cooldowns (user_id, command_name, last_used) "
+            "VALUES (?, ?, ?) ON CONFLICT(user_id, command_name) "
+            "DO UPDATE SET last_used = excluded.last_used",
+            -1, &stmt, NULL) != SQLITE_OK)
+      return;
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->author->id);
+    sqlite3_bind_text(stmt, 2, word, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)now);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+      return;
+  }
 
   struct discord_create_message reply = { .content = n->response };
   discord_create_message(client, event->channel_id, &reply, NULL);
