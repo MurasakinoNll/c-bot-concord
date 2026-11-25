@@ -17,4 +17,7 @@ UserCtx get_ctx_from_interaction(const struct discord_interaction *event);
 UserCtx get_ctx_from_message(const struct discord_message *event);
 bool ctx_has_role(const UserCtx *ctx, u64snowflake roleid);
 bool has_admin_bit(const UserCtx *ctx);
+
+/** this bot's own application/user id, set in on_ready (defined in main.c) */
+u64snowflake get_app_id(void);
 #endif

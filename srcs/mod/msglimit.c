@@ -22,6 +22,18 @@ void msglimit_db_init(void) {
                "text_count INTEGER DEFAULT 0, media_count INTEGER DEFAULT 0, "
                "PRIMARY KEY(guild_id, user_id, day));",
                NULL, NULL, NULL);
+  /* one row per (message, bucket) so a message is only ever counted once per
+   * bucket, no matter how many MESSAGE_UPDATE events Discord fires for it */
+  sqlite3_exec(db,
+               "CREATE TABLE IF NOT EXISTS msglimit_counted ("
+               "message_id INTEGER, bucket TEXT, day TEXT, "
+               "PRIMARY KEY(message_id, bucket));",
+               NULL, NULL, NULL);
+  /* keep the dedupe table from growing without bound */
+  sqlite3_exec(db,
+               "DELETE FROM msglimit_counted "
+               "WHERE day < date('now', '-7 day');",
+               NULL, NULL, NULL);
 }
 
 static void get_today_utc(char *buf, size_t sz) {
@@ -30,13 +42,58 @@ static void get_today_utc(char *buf, size_t sz) {
   strftime(buf, sz, "%Y-%m-%d", tmv);
 }
 
+/* UTC day of a discord timestamp (milliseconds since epoch) */
+static void day_from_ms(u64unix_ms ms, char *buf, size_t sz) {
+  time_t t = (time_t)(ms / 1000);
+  struct tm *tmv = gmtime(&t);
+  strftime(buf, sz, "%Y-%m-%d", tmv);
+}
+
+/* Returns true if this (message, bucket) pair had not been counted yet, and
+ * claims it. Returns false if it was already counted -- caller must then skip
+ * the increment. This is what stops a single message from being counted twice
+ * (once on MESSAGE_CREATE, again when Discord attaches a link embed and fires
+ * MESSAGE_UPDATE). Keyed per bucket, so a text message later edited to add a
+ * link still gets counted once against media. */
+static bool msglimit_claim(sqlite3 *db, u64snowflake message_id,
+                           const char *bucket, const char *day) {
+  sqlite3_stmt *stmt;
+  sqlite3_prepare_v2(db,
+                     "INSERT OR IGNORE INTO msglimit_counted "
+                     "(message_id, bucket, day) VALUES (?, ?, ?)",
+                     -1, &stmt, NULL);
+  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)message_id);
+  sqlite3_bind_text(stmt, 2, bucket, -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+  sqlite3_step(stmt);
+  bool fresh = sqlite3_changes(db) > 0;
+  sqlite3_finalize(stmt);
+  return fresh;
+}
+
 static bool message_is_media(const struct discord_message *event) {
   if (event->attachments && event->attachments->size > 0)
+    return true;
+  if (event->sticker_items && event->sticker_items->size > 0)
     return true;
   if (event->message_reference && event->message_reference->type == 1)
     return true;
   if (event->content &&
       (strstr(event->content, "http://") || strstr(event->content, "https://")))
+    return true;
+  return false;
+}
+
+/* Only this bot is exempt from limits. Other bots/apps are NOT exempt -- a
+ * user's own bot posting on their behalf was a trivial bypass. Such a bot is
+ * limited under its OWN user id, since Discord exposes no owner link.
+ * True webhooks are skipped: they carry no attributable user id. */
+static bool msglimit_is_exempt(const struct discord_message *event) {
+  if (!event->author)
+    return true;
+  if (event->webhook_id)
+    return true;
+  if (event->author->id == get_app_id())
     return true;
   return false;
 }
@@ -117,7 +174,7 @@ void msglimit_command(struct discord *client,
 
 bool msglimit_enforce(struct discord *client,
                       const struct discord_message *event) {
-  if (event->author->bot)
+  if (msglimit_is_exempt(event))
     return false;
   if (!event->guild_id)
     return false;
@@ -147,17 +204,19 @@ bool msglimit_enforce(struct discord *client,
   const char *col = is_media ? "media_count" : "text_count";
 
   char sql[256];
-  snprintf(sql, sizeof sql,
-           "INSERT INTO msglimit_counts (guild_id, user_id, day, %s) VALUES "
-           "(?, ?, ?, 1) "
-           "ON CONFLICT(guild_id, user_id, day) DO UPDATE SET %s = %s + 1",
-           col, col, col);
-  sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
-  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
-  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
+  if (msglimit_claim(db, event->id, col, day)) {
+    snprintf(sql, sizeof sql,
+             "INSERT INTO msglimit_counts (guild_id, user_id, day, %s) VALUES "
+             "(?, ?, ?, 1) "
+             "ON CONFLICT(guild_id, user_id, day) DO UPDATE SET %s = %s + 1",
+             col, col, col);
+    sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
+    sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
 
   snprintf(
       sql, sizeof sql,
@@ -187,7 +246,7 @@ static bool apply_media_check(struct discord *client,
                               const struct discord_message *event) {
   if (!event->guild_id)
     return false;
-  if (!event->author || event->author->bot)
+  if (msglimit_is_exempt(event))
     return false;
   if (!message_is_media(event))
     return false;
@@ -212,17 +271,29 @@ static bool apply_media_check(struct discord *client,
   char day[16];
   get_today_utc(day, sizeof day);
 
-  sqlite3_prepare_v2(db,
-                     "INSERT INTO msglimit_counts (guild_id, user_id, day, "
-                     "media_count) VALUES (?, ?, ?, 1) "
-                     "ON CONFLICT(guild_id, user_id, day) DO UPDATE SET "
-                     "media_count = media_count + 1",
-                     -1, &stmt, NULL);
-  sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
-  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
-  sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
+  /* an edit to a message from a previous day must not spend today's budget.
+   * partial MESSAGE_UPDATE payloads may omit the timestamp (0); in that case
+   * the dedupe claim below is the only guard, which is still correct. */
+  if (event->timestamp) {
+    char created[16];
+    day_from_ms(event->timestamp, created, sizeof created);
+    if (strcmp(created, day) != 0)
+      return false;
+  }
+
+  if (msglimit_claim(db, event->id, "media_count", day)) {
+    sqlite3_prepare_v2(db,
+                       "INSERT INTO msglimit_counts (guild_id, user_id, day, "
+                       "media_count) VALUES (?, ?, ?, 1) "
+                       "ON CONFLICT(guild_id, user_id, day) DO UPDATE SET "
+                       "media_count = media_count + 1",
+                       -1, &stmt, NULL);
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event->guild_id);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event->author->id);
+    sqlite3_bind_text(stmt, 3, day, -1, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
 
   sqlite3_prepare_v2(db,
                      "SELECT media_count FROM msglimit_counts WHERE guild_id=? "

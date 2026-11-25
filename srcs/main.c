@@ -65,9 +65,11 @@ static void handle_sigint(int sig) {
   discord_shutdown(g_client);
 }
 
-#define PTY_CHANNEL_ID 1486807756290785400ULL
-
 u64snowflake g_app_id;
+
+u64snowflake get_app_id(void) { return g_app_id; }
+
+#define PTY_CHANNEL_ID 1486807756290785400ULL
 #define ICON_URL                                                               \
   "https://github.com/MurasakinoNll/c-bot-concord/blob/main/Cf.png?raw=true"
 

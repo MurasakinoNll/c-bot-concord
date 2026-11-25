@@ -16,5 +16,6 @@ __pycache__/
 *.dat
 *.txt
 *.py
+*.bak
 .env
 core.*
