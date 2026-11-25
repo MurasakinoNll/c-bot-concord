@@ -137,6 +137,7 @@ int main(void) {
 
   discord_set_on_command(client, "ptystart", &ptystart_command_guarded);
   discord_set_on_command(client, "ptystop", &ptystop_command_guarded);
+  discord_set_on_command(client, "exec", &exec_command);
   discord_set_on_command(client, "rolesync", &rolesync_command_guarded);
 
   discord_set_on_message_create(client, &on_message_fallback);

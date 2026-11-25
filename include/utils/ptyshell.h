@@ -9,4 +9,7 @@ void ptystart_command(struct discord *client, const struct discord_message *even
 void ptystop_command(struct discord *client, const struct discord_message *event);
 void ptyinput_fallback(struct discord *client, const struct discord_message *event);
 
+/* one-shot owner-only shell command, works in any channel */
+void exec_command(struct discord *client, const struct discord_message *event);
+
 #endif
