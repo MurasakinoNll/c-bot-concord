@@ -5,6 +5,7 @@
 #include "mod/mod.h"
 #include "mod/msglimit.h"
 #include "roleutil/roleutils.h"
+#include "useful/gpt.h"
 #include "useful/ping.h"
 #include "useful/temp.h"
 #include "useful/urban.h"
@@ -52,6 +53,7 @@ GUARDED(undungeon, undungeon)
 GUARDED(harakdoor, harakdoor)
 GUARDED(hell, hell)
 GUARDED(urban_command, urban_command)
+GUARDED(gpt_command, gpt_command)
 GUARDED(temp_command, temp_command)
 GUARDED(ping_command, ping_command)
 
@@ -104,6 +106,7 @@ int main(void) {
   ticket_db_init();
   msglimit_db_init();
   rolesync_db_init();
+  gpt_init();
 
   discord_set_on_ready(client, &on_ready);
   discord_set_prefix(client, "+");
@@ -135,6 +138,7 @@ int main(void) {
   discord_set_on_command(client, "harakdoor", &harakdoor_guarded);
   discord_set_on_command(client, "hell", &hell_guarded);
   discord_set_on_command(client, "urban", &urban_command_guarded);
+  discord_set_on_command(client, "gpt", &gpt_command_guarded);
   discord_set_on_command(client, "temp", &temp_command_guarded);
   discord_set_on_command(client, "ping", &ping_command_guarded);
 

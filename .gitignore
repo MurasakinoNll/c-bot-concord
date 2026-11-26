@@ -8,6 +8,9 @@ ignore/
 asms/
 bins/
 __pycache__/
+# Secrets -- api keys, never commit
+settings.json
+
 # Common junk
 *.o
 *.d
