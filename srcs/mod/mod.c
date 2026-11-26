@@ -175,3 +175,95 @@ void unban(struct discord *client, const struct discord_message *event) {
   };
   discord_remove_guild_ban(client, event->guild_id, uid, &params, &ret);
 }
+
+/* +purge <n> -- delete the last n messages in this channel, not counting the
+ * command itself. Discord's bulk endpoint takes 2-100 ids and refuses anything
+ * older than 14 days, so we clamp, filter, and fall back to a single delete. */
+#define PURGE_MAX 100
+#define PURGE_AGE_LIMIT_MS (14ULL * 24 * 60 * 60 * 1000)
+
+void purge(struct discord *client, const struct discord_message *event) {
+  if (event->author->bot)
+    return;
+
+  UserCtx ctx = get_ctx_from_message(event);
+  u64snowflake allowlist[] = {1155152569526669391ULL};
+  if (!check_perm_byrole(&ctx, allowlist, 1)) {
+    fprintf(stderr, "purge rejected, invalid permissions\n");
+    return;
+  }
+
+  int n = 0;
+  if (sscanf(event->content, " %d", &n) != 1 || n < 1 || n > PURGE_MAX) {
+    char usage[64];
+    snprintf(usage, sizeof usage, "usage: +purge <1-%d>", PURGE_MAX);
+    struct discord_create_message reply = {.content = usage};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
+  /* before = this message, so the command itself isn't part of the count */
+  struct discord_messages msgs = {0};
+  struct discord_ret_messages mret = {.sync = &msgs};
+  struct discord_get_channel_messages gparams = {
+      .before = event->id,
+      .limit = n,
+  };
+  if (discord_get_channel_messages(client, event->channel_id, &gparams,
+                                   &mret) != CCORD_OK) {
+    struct discord_create_message reply = {.content =
+                                               "failed to fetch messages"};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
+  u64unix_ms cutoff = (u64unix_ms)time(NULL) * 1000 - PURGE_AGE_LIMIT_MS;
+  u64snowflake ids[PURGE_MAX];
+  int count = 0, too_old = 0;
+
+  for (int i = 0; i < msgs.size && count < PURGE_MAX; i++) {
+    if (msgs.array[i].timestamp && msgs.array[i].timestamp < cutoff) {
+      too_old++;
+      continue;
+    }
+    ids[count++] = msgs.array[i].id;
+  }
+
+  /* clean up the invoking command regardless */
+  discord_delete_message(client, event->channel_id, event->id, NULL, NULL);
+
+  if (count == 0) {
+    struct discord_create_message reply = {
+        .content = "nothing to purge (messages over 14 days old can't be bulk "
+                   "deleted)"};
+    discord_create_message(client, event->channel_id, &reply, NULL);
+    return;
+  }
+
+  struct discord_ret ret = {
+      .fail = &on_modaction_fail,
+      .data = (void *)(intptr_t)event->channel_id,
+  };
+
+  if (count == 1) {
+    /* bulk endpoint rejects a single id */
+    struct discord_delete_message dparams = {.reason = "purge"};
+    discord_delete_message(client, event->channel_id, ids[0], &dparams, &ret);
+  } else {
+    struct discord_bulk_delete_messages bparams = {
+        .reason = "purge",
+        .messages = &(struct snowflakes){.size = count, .array = ids},
+    };
+    discord_bulk_delete_messages(client, event->channel_id, &bparams, &ret);
+  }
+
+  char buf[128];
+  if (too_old)
+    snprintf(buf, sizeof buf, "purged %d message(s), skipped %d older than 14 "
+                              "days",
+             count, too_old);
+  else
+    snprintf(buf, sizeof buf, "purged %d message(s)", count);
+  struct discord_create_message reply = {.content = buf};
+  discord_create_message(client, event->channel_id, &reply, NULL);
+}

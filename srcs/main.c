@@ -45,6 +45,7 @@ GUARDED(ban, ban)
 GUARDED(mute, mute)
 GUARDED(unban, unban)
 GUARDED(unmute, unmute)
+GUARDED(purge, purge)
 
 GUARDED(dungeon, dungeon)
 GUARDED(undungeon, undungeon)
@@ -56,6 +57,7 @@ GUARDED(ping_command, ping_command)
 
 GUARDED(ptystart_command, ptystart_command)
 GUARDED(ptystop_command, ptystop_command)
+GUARDED(exec_command, exec_command)
 GUARDED(rolesync_command, rolesync_command)
 
 static struct discord *g_client;
@@ -124,6 +126,7 @@ int main(void) {
   discord_set_on_command(client, "mute", &mute_guarded);
   discord_set_on_command(client, "unban", &unban_guarded);
   discord_set_on_command(client, "unmute", &unmute_guarded);
+  discord_set_on_command(client, "purge", &purge_guarded);
   discord_set_on_command(client, "msglimit", &msglimit_command);
   discord_set_on_message_update(client, &msglimit_enforce_edit);
 
@@ -137,7 +140,7 @@ int main(void) {
 
   discord_set_on_command(client, "ptystart", &ptystart_command_guarded);
   discord_set_on_command(client, "ptystop", &ptystop_command_guarded);
-  discord_set_on_command(client, "exec", &exec_command);
+  discord_set_on_command(client, "exec", &exec_command_guarded);
   discord_set_on_command(client, "rolesync", &rolesync_command_guarded);
 
   discord_set_on_message_create(client, &on_message_fallback);
